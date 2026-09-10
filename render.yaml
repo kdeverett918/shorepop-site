@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: shorepop
+    runtime: static
+    branch: main
+    buildCommand: npm ci && npm run build
+    staticPublishPath: out
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
+      - path: /img/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    routes:
+      - type: rewrite
+        source: /privacy
+        destination: /privacy.html
+      - type: rewrite
+        source: /support
+        destination: /support.html
+      - type: rewrite
+        source: /press
+        destination: /press.html
