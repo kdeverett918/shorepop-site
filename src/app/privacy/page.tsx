@@ -5,7 +5,7 @@ import { siteConfig } from '@/config/site'
 export const metadata: Metadata = {
   title: 'Privacy policy',
   description:
-    'What Shorepop stores on your device, what it sends to Unity Gaming Services for leaderboards, and how to have your record removed.',
+    'How Shorepop handles local game progress, optional support messages, and requests to delete your data.',
   alternates: { canonical: '/privacy' },
 }
 
@@ -21,36 +21,37 @@ export default function PrivacyPage() {
         <div className="text-navy/90 mt-8 space-y-6 text-lg leading-relaxed">
           <p>
             <strong>Shorepop</strong> is a puzzle game made by Kristine Everett. This policy
-            explains what the game does with data.
+            describes the current test release, build 13, and how we handle game data and support
+            messages.
           </p>
 
           <p>
             <strong>What the game stores on your device.</strong> Your progress, settings and local
-            play journal are saved in the app&apos;s private storage on your phone. They stay there.
-            Deleting the app deletes them.
+            play journal are saved in the app&apos;s private storage on your phone. The game does
+            not upload these records. Device backups may retain a copy according to your Apple or
+            Google account settings; Shorepop does not operate a cloud-save service.
           </p>
 
           <p>
-            <strong>What the game sends over the network.</strong> Shorepop uses Unity Gaming
-            Services for its leaderboards. When the game starts it signs you in anonymously: Unity
-            creates a random player id that is not linked to your name, email, phone number or any
-            account. After a level the game sends your score and a display name the game generated
-            (a coastal animal, like &quot;Tidal Otter&quot;) to the leaderboard so you can see how
-            your week compares with other players. That is the only information the game sends. If
-            the service cannot be reached, the game works normally and the leaderboard shows
-            &quot;Not available right now&quot;.
+            <strong>Online services.</strong> Online rankings are unavailable in this test release.
+            The game does not sign you in to Unity Gaming Services or send your scores to a
+            leaderboard. You do not need an account or an internet connection to play.
           </p>
 
           <p>
-            Unity processes this on our behalf under its own privacy policy (
-            <a
-              href="https://unity.com/legal/privacy-policy"
-              className="text-berry decoration-berry/40 hover:decoration-berry font-bold underline underline-offset-4"
-            >
-              https://unity.com/legal/privacy-policy
-            </a>
-            ). Unity may also receive basic diagnostic information about the game&apos;s
-            installation and performance.
+            <strong>Analytics and diagnostics.</strong> This release has no configured game
+            analytics destination. Unity analytics submission, Unity Connect, cloud diagnostics and
+            advertising services are disabled. Apple or Google may separately process store,
+            installation or diagnostic information under their own policies and your platform
+            settings. TestFlight feedback and crash reports you share through the testing platform
+            may be made available to us to investigate problems.
+          </p>
+
+          <p>
+            <strong>Support messages.</strong> If you email us, we receive your email address,
+            message and any attachments you choose to send. Our email provider processes this
+            correspondence so we can respond and investigate your request. Please send only the
+            information needed to explain the issue.
           </p>
 
           <p>
@@ -66,16 +67,18 @@ export default function PrivacyPage() {
           </p>
 
           <p>
-            <strong>Deleting your data.</strong> Because the leaderboard record is tied only to an
-            anonymous id, there is nothing that identifies you to delete, but if you want that
-            record removed, email{' '}
+            <strong>Deleting your data.</strong> Delete the app to remove its local game data, or
+            use Android&apos;s app-storage settings to clear its data. Offloading an app on iOS
+            retains its data. Manage any device-backup copies through your platform settings. There
+            is no active Shorepop leaderboard account to delete in this release. To ask about your
+            data or request deletion of support correspondence, email{' '}
             <a
               href={`mailto:${email}`}
               className="text-berry decoration-berry/40 hover:decoration-berry font-bold underline underline-offset-4"
             >
               {email}
-            </a>{' '}
-            with the player id shown on the game&apos;s Settings screen and we will remove it.
+            </a>
+            . No game player ID is required.
           </p>
 
           <p>

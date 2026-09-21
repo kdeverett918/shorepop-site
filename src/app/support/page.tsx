@@ -16,7 +16,7 @@ const faq = [
   },
   {
     q: 'Where is my progress saved?',
-    a: 'On your device, in the app’s private storage. There is no account to make. Deleting the app deletes your progress.',
+    a: 'On your device, in the app’s private storage. There is no account to make or Shorepop cloud-save service. Deleting the app removes its local progress; device-backup copies are managed through your Apple or Google settings.',
   },
   {
     q: 'When does the daily tide reset?',
@@ -28,7 +28,7 @@ const faq = [
   },
   {
     q: 'Does the game need a connection?',
-    a: 'No. You can play without one. The leaderboard needs a connection and shows "Not available right now" when it cannot reach the service.',
+    a: 'No. You can play offline. Online rankings are unavailable in the current test release, so connecting to the internet will not enable them.',
   },
 ]
 
@@ -60,14 +60,15 @@ export default function SupportPage() {
 
         <h2 className="text-navy mt-12 text-3xl font-semibold">Delete my data</h2>
         <p className="text-navy/90 mt-4 text-lg leading-relaxed">
-          Your progress lives only on your phone, so deleting the app deletes it. The leaderboard
-          record is tied to an anonymous id, not to you. If you want that record removed anyway,
-          email{' '}
+          Delete the app to remove local progress, settings and play records. On Android, you can
+          also clear the app&apos;s data in its storage settings. Offloading on iOS keeps your data.
+          Manage any device-backup copies through your Apple or Google settings. Online rankings are
+          disabled in this release, and there is no game account to delete. For questions or to
+          request deletion of support emails, contact{' '}
           <a href={mailtoSupport} className={linkClass}>
             {siteConfig.email}
           </a>{' '}
-          with the player id shown on the game&apos;s Settings screen and we will remove it. The
-          full details are in the{' '}
+          — no game player ID is needed. The full details are in the{' '}
           <a href="/privacy" className={linkClass}>
             privacy policy
           </a>

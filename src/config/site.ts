@@ -8,7 +8,7 @@ export const siteConfig = {
   appId: 'com.shorepop.game',
   ogImage: '/og-image.png',
   owner: 'Kristine Everett',
-  policyDate: '2026-09-10',
+  policyDate: '2026-09-20',
 } as const
 
 export const mailtoLaunch = `mailto:${siteConfig.email}?subject=${encodeURIComponent(
