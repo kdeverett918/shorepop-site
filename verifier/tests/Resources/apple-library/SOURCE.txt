@@ -1,0 +1,2 @@
+Test vectors copied from https://github.com/apple/app-store-server-library-python (tests/resources and the constants of tests/test_x509_verifiction.py), MIT licensed, see LICENSE.txt.
+Test roots here are used ONLY by tests; the service trusts only the embedded Apple Root CA - G3.

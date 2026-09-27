@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Shorepop.Verifier</RootNamespace>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- The console test project lives under tests/ and must not be compiled into the service. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);tests/**;publish/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.31" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.31" />
+    <EmbeddedResource Include="Resources/AppleRootCA-G3.cer" LogicalName="AppleRootCA-G3.cer" />
+  </ItemGroup>
+</Project>

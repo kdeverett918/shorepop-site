@@ -1,0 +1,34 @@
+# Render Blueprint for the Shorepop purchase verifier. Values are set in the dashboard / API,
+# never committed (sync: false). See DEPLOY.md for the non-secret values.
+services:
+  - type: web
+    name: shorepop-verifier
+    runtime: docker
+    plan: free
+    region: oregon
+    repo: https://github.com/kdeverett918/harbor-sprouts
+    branch: master
+    rootDir: server/verifier
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeploy: false
+    envVars:
+      - key: UGS_PROJECT_ID
+        sync: false
+      - key: APP_BUNDLE_ID
+        sync: false
+      - key: APPLE_ALLOWED_ENVIRONMENTS
+        sync: false
+      - key: GOOGLE_PLAY_SA_JSON
+        sync: false
+      - key: APPLE_IAP_KEY_ID
+        sync: false
+      - key: APPLE_IAP_ISSUER_ID
+        sync: false
+      - key: APPLE_IAP_PRIVATE_KEY
+        sync: false
+      - key: VERIFIER_STORE
+        sync: false
+      - key: VERIFIER_DB_PATH
+        sync: false
