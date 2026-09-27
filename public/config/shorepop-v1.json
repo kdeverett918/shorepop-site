@@ -2,7 +2,7 @@
   "schema": 1,
   "updated": "2026-09-26",
   "interstitial_enabled": true,
-  "holdout_percent": 0,
+  "holdout_percent": 10,
   "interstitial_cooldown_seconds": 180,
   "interstitial_session_cap": 2,
   "interstitial_daily_cap": 3,
