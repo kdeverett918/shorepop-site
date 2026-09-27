@@ -99,6 +99,9 @@ app.MapGet("/healthz", (IAppleServerApi appleApi, IGooglePlayApi google) => Resu
 app.MapPost("/v1/purchases/validate", async (NativePurchaseProof proof, HttpContext context, PurchaseService service) =>
     Results.Json(await service.ValidateAsync(context.User.FindFirst("sub")!.Value, proof, context.RequestAborted)))
     .RequireAuthorization().RequireRateLimiting("player");
+app.MapPost("/v1/purchases/ack", (AckRequest request, HttpContext context, PurchaseService service) =>
+    Results.Json(service.Ack(context.User.FindFirst("sub")!.Value, request)))
+    .RequireAuthorization().RequireRateLimiting("player");
 app.MapPost("/v1/purchases/reconcile", async (ReconcileRequest request, HttpContext context, PurchaseService service) =>
     Results.Json(await service.ReconcileAsync(context.User.FindFirst("sub")!.Value, request, context.RequestAborted)))
     .RequireAuthorization().RequireRateLimiting("player");

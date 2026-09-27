@@ -186,8 +186,8 @@ Case("local chain: alg none/HS256 header REJECTED", () =>
 });
 
 // ---- Service: player binding, subscription revisions, reconcile, Google fail-closed ----
-PurchaseService Service(IPurchaseStore store, IGooglePlayApi? google = null, IAppleServerApi? appleApi = null) =>
-    new(localVerifier, checker, appleApi ?? new FakeApple(), google ?? new FakeGoogle(false), store, ShorepopCatalog.BundleId, NullLogger<PurchaseService>.Instance);
+PurchaseService Service(IPurchaseStore store, IGooglePlayApi? google = null, IAppleServerApi? appleApi = null, Func<DateTimeOffset>? clock = null) =>
+    new(localVerifier, checker, appleApi ?? new FakeApple(), google ?? new FakeGoogle(false), store, ShorepopCatalog.BundleId, NullLogger<PurchaseService>.Instance, clock);
 NativePurchaseProof AppleProof(string product, string id, string jws) => new()
     { Store = ShorepopCatalog.AppleStore, ApplicationId = ShorepopCatalog.BundleId, ProductId = product, TransactionId = id, Receipt = "", AppleSignedTransaction = jws };
 
@@ -310,6 +310,130 @@ foreach (var (label, makeStore) in new (string, Func<IPurchaseStore>)[] { ("memo
         await RejectsAsync(503, "google_validation_not_configured", () => service.ReconcileAsync("p", new ReconcileRequest { Store = ShorepopCatalog.GoogleStore, ApplicationId = ShorepopCatalog.BundleId }, default));
         Expect(!new GooglePlayApi(new HttpClient(), null).Configured && !new GooglePlayApi(new HttpClient(), "not json").Configured, "configured flag");
     });
+
+    // ---- appAccountToken binding, ack, reclaim, claimant cap ----
+    var clockNow = DateTimeOffset.UtcNow;
+    var timed = Service(store, clock: () => clockNow);
+    const string A = ShorepopCatalog.AppleStore, B = ShorepopCatalog.BundleId;
+    Dictionary<string, object> TokTx(string product, string id, string? token, string type = "Consumable")
+    {
+        var t = Tx(product, id, type);
+        if (token != null) t["appAccountToken"] = token;
+        return t;
+    }
+    await CaseAsync($"{label}: consumable with token: squatter binds first, token-matched player reclaims before ack (transfer recorded)", async () =>
+    {
+        clockNow = DateTimeOffset.UtcNow;
+        string signed = chain.Sign(TokTx("gg.shorepop.gems.80", "7000000001", AppAccountTokens.Derive("buyer1")));
+        await timed.ValidateAsync("squatter1", AppleProof("gg.shorepop.gems.80", "7000000001", signed), default);
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => timed.ValidateAsync("stranger1", AppleProof("gg.shorepop.gems.80", "7000000001", signed), default));
+        var proof = AppleProof("gg.shorepop.gems.80", "7000000001", signed); proof.AppAccountToken = AppAccountTokens.Derive("buyer1");
+        var won = await timed.ValidateAsync("buyer1", proof, default);
+        Expect(won.TransactionId == "7000000001", "result");
+        Expect(store.Claimants(A, B, "7000000001").SequenceEqual(["buyer1"]), "owner is buyer1: " + string.Join(",", store.Claimants(A, B, "7000000001")));
+        var moves = store.Transfers(A, B, "7000000001");
+        Expect(moves.Count == 1 && moves[0].FromPlayer == "squatter1" && moves[0].ToPlayer == "buyer1" && moves[0].Reason == "app_account_token", "transfer log");
+        Expect(store.List("squatter1", A, B).All(r => r.TransactionId != "7000000001"), "squatter lost the row");
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => timed.ValidateAsync("squatter1", AppleProof("gg.shorepop.gems.80", "7000000001", signed), default));
+    });
+    await CaseAsync($"{label}: consumable with token: 409 after ack even for the token-matched player", async () =>
+    {
+        clockNow = DateTimeOffset.UtcNow;
+        string signed = chain.Sign(TokTx("gg.shorepop.gems.260", "7000000002", AppAccountTokens.Derive("buyer2")));
+        await timed.ValidateAsync("squatter2", AppleProof("gg.shorepop.gems.260", "7000000002", signed), default);
+        var ack = timed.Ack("squatter2", new AckRequest { TransactionId = "7000000002" });
+        Expect(ack.Acked && ack.TransactionId == "7000000002", "ack result");
+        Expect(store.Claims(A, B, "7000000002").Single().AckedUtc != null, "acked stamp");
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => timed.ValidateAsync("buyer2", AppleProof("gg.shorepop.gems.260", "7000000002", signed), default));
+        clockNow = clockNow.AddDays(30);
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => timed.ValidateAsync("buyer2", AppleProof("gg.shorepop.gems.260", "7000000002", signed), default));
+        Expect((await timed.ValidateAsync("squatter2", AppleProof("gg.shorepop.gems.260", "7000000002", signed), default)).TransactionId == "7000000002", "owner retry still 200");
+        Expect(store.Transfers(A, B, "7000000002").Count == 0, "no transfer");
+    });
+    await CaseAsync($"{label}: consumable with token: a mismatched player never reclaims, even after 24 h unacked", async () =>
+    {
+        clockNow = DateTimeOffset.UtcNow;
+        string signed = chain.Sign(TokTx("gg.shorepop.coins.600", "7000000003", AppAccountTokens.Derive("buyer3")));
+        await timed.ValidateAsync("buyer3", AppleProof("gg.shorepop.coins.600", "7000000003", signed), default);
+        clockNow = clockNow.AddHours(48);
+        var forged = AppleProof("gg.shorepop.coins.600", "7000000003", signed); forged.AppAccountToken = AppAccountTokens.Derive("buyer3");
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => timed.ValidateAsync("thief3", forged, default));
+        Expect(store.Claimants(A, B, "7000000003").SequenceEqual(["buyer3"]), "request field alone never binds");
+    });
+    await CaseAsync($"{label}: consumable without token (killed before commit, reinstalled): 409 inside 24 h, reclaim after, 409 after the new owner acks", async () =>
+    {
+        var t0 = DateTimeOffset.UtcNow; clockNow = t0;
+        string signed = chain.Sign(TokTx("gg.shorepop.gems.550", "7000000004", null));
+        await timed.ValidateAsync("oldAnon", AppleProof("gg.shorepop.gems.550", "7000000004", signed), default);
+        clockNow = t0.AddHours(23);
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => timed.ValidateAsync("newAnon", AppleProof("gg.shorepop.gems.550", "7000000004", signed), default));
+        clockNow = t0.AddHours(24).AddMinutes(1);
+        Expect((await timed.ValidateAsync("newAnon", AppleProof("gg.shorepop.gems.550", "7000000004", signed), default)).ProductId == "gg.shorepop.gems.550", "reclaimed");
+        var moves = store.Transfers(A, B, "7000000004");
+        Expect(moves.Count == 1 && moves[0].FromPlayer == "oldAnon" && moves[0].ToPlayer == "newAnon" && moves[0].Reason == "unacked_24h", "transfer log");
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => Task.FromResult(timed.Ack("oldAnon", new AckRequest { TransactionId = "7000000004" })));
+        timed.Ack("newAnon", new AckRequest { TransactionId = "7000000004", Store = A, ApplicationId = B });
+        clockNow = t0.AddDays(10);
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => timed.ValidateAsync("thirdAnon", AppleProof("gg.shorepop.gems.550", "7000000004", signed), default));
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => timed.ValidateAsync("oldAnon", AppleProof("gg.shorepop.gems.550", "7000000004", signed), default));
+    });
+    await CaseAsync($"{label}: ack: unknown transaction 404, wrong app 422, idempotent", async () =>
+    {
+        await RejectsAsync(404, "transaction_not_found", () => Task.FromResult(timed.Ack("p", new AckRequest { TransactionId = "7999999999" })));
+        await RejectsAsync(422, "transaction_missing", () => Task.FromResult(timed.Ack("p", new AckRequest { TransactionId = "" })));
+        await RejectsAsync(422, "application_mismatch", () => Task.FromResult(timed.Ack("p", new AckRequest { TransactionId = "7000000004", ApplicationId = "com.other" })));
+        var first = store.Claims(A, B, "7000000002").Single().AckedUtc;
+        timed.Ack("squatter2", new AckRequest { TransactionId = "7000000002" });
+        Expect(store.Claims(A, B, "7000000002").Single().AckedUtc == first, "first ack time kept");
+    });
+    await CaseAsync($"{label}: entitlement with token: mismatched player 409 on a replayed JWS, restore (fresh re-signed JWS) 200, replay of that restore 409", async () =>
+    {
+        clockNow = DateTimeOffset.UtcNow;
+        long signedAt = clockNow.AddHours(-2).ToUnixTimeMilliseconds();
+        var tx = TokTx("gg.shorepop.noads", "7100000001", AppAccountTokens.Derive("owner6"), "Non-Consumable"); tx["signedDate"] = signedAt;
+        string original = chain.Sign(tx);
+        await timed.ValidateAsync("owner6", AppleProof("gg.shorepop.noads", "7100000001", original), default);
+        await RejectsAsync(409, "app_account_token_mismatch", () => timed.ValidateAsync("other6", AppleProof("gg.shorepop.noads", "7100000001", original), default));
+        tx["signedDate"] = clockNow.AddMinutes(-1).ToUnixTimeMilliseconds();
+        string restored = chain.Sign(tx);
+        Expect((await timed.ValidateAsync("reinstall6", AppleProof("gg.shorepop.noads", "7100000001", restored), default)).ProductId == "gg.shorepop.noads", "restore granted");
+        await RejectsAsync(409, "app_account_token_mismatch", () => timed.ValidateAsync("other6", AppleProof("gg.shorepop.noads", "7100000001", restored), default));
+        Expect((await timed.ValidateAsync("reinstall6", AppleProof("gg.shorepop.noads", "7100000001", restored), default)).ProductId == "gg.shorepop.noads", "restorer retry");
+        var stale = TokTx("gg.shorepop.starter", "7100000002", AppAccountTokens.Derive("owner6"), "Non-Consumable"); stale["signedDate"] = clockNow.AddHours(-25).ToUnixTimeMilliseconds();
+        await RejectsAsync(409, "app_account_token_mismatch", () => timed.ValidateAsync("other6", AppleProof("gg.shorepop.starter", "7100000002", chain.Sign(stale)), default));
+        Expect(store.Claimants(A, B, "7100000001").SequenceEqual(["owner6", "reinstall6"]), "claimants " + string.Join(",", store.Claimants(A, B, "7100000001")));
+    });
+    await CaseAsync($"{label}: entitlement cap: 5 distinct claimants per original transaction, 6th 409, existing claimants and the token owner unaffected", async () =>
+    {
+        clockNow = DateTimeOffset.UtcNow;
+        string open = chain.Sign(TokTx("gg.shorepop.noads", "7200000001", null, "Non-Consumable"));
+        for (int i = 1; i <= 5; i++) await timed.ValidateAsync("cap" + i, AppleProof("gg.shorepop.noads", "7200000001", open), default);
+        await RejectsAsync(409, "claimant_limit_reached", () => timed.ValidateAsync("cap6", AppleProof("gg.shorepop.noads", "7200000001", open), default));
+        Expect((await timed.ValidateAsync("cap3", AppleProof("gg.shorepop.noads", "7200000001", open), default)).TransactionId == "7200000001", "existing claimant ok");
+        Expect(store.Claimants(A, B, "7200000001").Count == 5, "five");
+
+        var sub = TokTx(ShorepopCatalog.SubscriptionProductId, "7300000001", AppAccountTokens.Derive("subOwner"), "Auto-Renewable Subscription");
+        sub["expiresDate"] = nowMs + 30 * 86400000L;
+        long baseMs = clockNow.AddHours(-3).ToUnixTimeMilliseconds();
+        for (int i = 1; i <= 5; i++)
+        {
+            sub["signedDate"] = baseMs + i * 1000;
+            await timed.ValidateAsync("subCap" + i, AppleProof(ShorepopCatalog.SubscriptionProductId, "7300000001", chain.Sign(sub)), default);
+        }
+        var renewal = TokTx(ShorepopCatalog.SubscriptionProductId, "7300000002", AppAccountTokens.Derive("subOwner"), "Auto-Renewable Subscription");
+        renewal["originalTransactionId"] = "7300000001"; renewal["expiresDate"] = nowMs + 60 * 86400000L; renewal["signedDate"] = baseMs + 10000;
+        await RejectsAsync(409, "claimant_limit_reached", () => timed.ValidateAsync("subCap6", AppleProof(ShorepopCatalog.SubscriptionProductId, "7300000002", chain.Sign(renewal)), default));
+        Expect((await timed.ValidateAsync("subOwner", AppleProof(ShorepopCatalog.SubscriptionProductId, "7300000002", chain.Sign(renewal)), default)).TransactionId == "7300000002", "token owner never capped");
+        Expect((await timed.ValidateAsync("subCap2", AppleProof(ShorepopCatalog.SubscriptionProductId, "7300000002", chain.Sign(renewal)), default)).TransactionId == "7300000002", "group claimant takes the renewal");
+    });
+    await CaseAsync($"{label}: entitlement without token keeps multi-claim (restore by a new player, no freshness needed)", async () =>
+    {
+        clockNow = DateTimeOffset.UtcNow;
+        var tx = TokTx("gg.shorepop.starter", "7400000001", null, "Non-Consumable"); tx["signedDate"] = clockNow.AddDays(-3).ToUnixTimeMilliseconds();
+        string old = chain.Sign(tx);
+        await timed.ValidateAsync("nt1", AppleProof("gg.shorepop.starter", "7400000001", old), default);
+        Expect((await timed.ValidateAsync("nt2", AppleProof("gg.shorepop.starter", "7400000001", old), default)).ProductId == "gg.shorepop.starter", "second player");
+    });
 }
 Case("sqlite: claims survive a new store instance on the same file", () =>
 {
@@ -391,6 +515,19 @@ Case("catalog kinds mirror IapCatalog; Apple type never loosens a consumable", (
     Expect(ShorepopCatalog.AppleKind("Non-Consumable", "gg.shorepop.noads") == ProductKind.NonConsumable, "noads");
 });
 
+Case("appAccountToken: UUIDv5 matches RFC 4122 / Python uuid5 vectors; derivation and normalization", () =>
+{
+    Expect(AppAccountTokens.Uuid5("6ba7b810-9dad-11d1-80b4-00c04fd430c8", "python.org") == "886313e1-3b8a-5372-9b90-0c9aee199e5d", "uuid5(DNS, python.org)");
+    Expect(AppAccountTokens.Derive("abc123") == "0f752aa9-33c5-54b1-b936-68d3b28f2043", "derive(abc123) " + AppAccountTokens.Derive("abc123"));
+    Expect(AppAccountTokens.Derive("abc123") != AppAccountTokens.Derive("abc124"), "distinct players");
+    Expect(AppAccountTokens.Normalize("0F752AA9-33C5-54B1-B936-68D3B28F2043") == "0f752aa9-33c5-54b1-b936-68d3b28f2043", "normalize upper");
+    Expect(AppAccountTokens.Normalize("") == null && AppAccountTokens.Normalize("not-a-uuid") == null, "normalize junk");
+    var t = Tx("gg.shorepop.gems.80", "7500000001"); t["appAccountToken"] = "0F752AA9-33C5-54B1-B936-68D3B28F2043";
+    Expect(checker.Check(chain.Sign(t), "gg.shorepop.gems.80", "7500000001", DateTimeOffset.UtcNow).AppAccountToken == "0f752aa9-33c5-54b1-b936-68d3b28f2043", "JWS token read + normalized");
+    t["appAccountToken"] = "junk";
+    Expect(checker.Check(chain.Sign(t), "gg.shorepop.gems.80", "7500000001", DateTimeOffset.UtcNow).AppAccountToken == "invalid:junk", "non-UUID token never matches");
+    Expect(checker.Check(chain.Sign(Tx("gg.shorepop.gems.80", "7500000001")), "gg.shorepop.gems.80", "7500000001", DateTimeOffset.UtcNow).AppAccountToken == null, "absent token");
+});
 Case("ugs claims: project id, single subject, nbf required", () =>
 {
     const string project = "26418e78-9eb7-42c5-955c-b4c141443252";

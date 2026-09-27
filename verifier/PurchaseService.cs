@@ -10,6 +10,14 @@ public sealed class PurchaseService(
 {
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
+    /// <summary>An unacked consumable whose JWS carries no appAccountToken may be reclaimed by another player after this.</summary>
+    public static readonly TimeSpan ReclaimAfter = TimeSpan.FromHours(24);
+    /// <summary>Distinct players that may hold one entitlement (per original transaction); the token-matched player is never capped.</summary>
+    public const int MaxEntitlementClaimants = 5;
+    /// <summary>A restore proof for a token-bound entitlement must be signed by Apple within this window.</summary>
+    public static readonly TimeSpan RestoreFreshness = TimeSpan.FromHours(24);
+    private static readonly TimeSpan ClockSkew = TimeSpan.FromMinutes(5);
+
     public async Task<ValidatedNativePurchase> ValidateAsync(string playerId, NativePurchaseProof? proof, CancellationToken cancel)
     {
         if (proof == null) throw new VerifierRefusal(400, "body_required");
@@ -27,19 +35,83 @@ public sealed class PurchaseService(
         }
         else verdict = await GoogleVerdict(productId, transactionId, cancel);
 
-        // Consumables grant currency once: the first player owns the transaction. Entitlements follow the store
-        // account (an iOS reinstall can mint a new anonymous UGS player), so every presenting player gets a claim.
-        var record = Record(playerId, verdict);
-        string owner = store.Bind(record, ShorepopCatalog.SingleOwner(verdict.Kind));
-        if (owner != playerId)
+        string derived = AppAccountTokens.Derive(playerId);
+        string? claimed = AppAccountTokens.Normalize(proof.AppAccountToken);
+        if (!string.IsNullOrEmpty(proof.AppAccountToken) && claimed != derived)
+            log.LogWarning("validate: client AppAccountToken differs from the server derivation (client derivation bug?) tx={Tx}", Digest(transactionId));
+
+        var at = now();
+        var result = store.Bind(Record(playerId, verdict), at, context => Decide(context, playerId, verdict, at, allowTransfer: true));
+        if (result.Decision.Action == ClaimAction.Refuse)
         {
-            log.LogWarning("validate refused {Store} {Product} tx={Tx}: consumable owned by another player", storeName, productId, Digest(transactionId));
-            throw new VerifierRefusal(409, "transaction_owned_by_another_player");
+            log.LogWarning("validate refused {Store} {Product} kind={Kind} tx={Tx} code={Code} tokenInJws={Token} claimants={Claimants}",
+                storeName, productId, verdict.Kind, Digest(transactionId), result.Decision.RefusalCode, verdict.AppAccountToken != null, result.PreviousClaimants.Count);
+            throw new VerifierRefusal(409, result.Decision.RefusalCode ?? "transaction_owned_by_another_player");
         }
+        if (result.Decision.Action == ClaimAction.Transfer)
+            log.LogWarning("validate transferred unacked consumable {Store} {Product} tx={Tx} reason={Reason} from={From} to={To}",
+                storeName, productId, Digest(transactionId), result.Decision.Reason,
+                string.Join(",", result.PreviousClaimants.Select(Digest)), Digest(playerId));
         var stored = store.List(playerId, storeName, bundleId).First(r => r.TransactionId == transactionId);
         log.LogInformation("validate ok {Store} {Product} kind={Kind} env={Environment} refunded={Refunded} tx={Tx}",
             storeName, productId, verdict.Kind, stored.Environment, stored.Refunded, Digest(transactionId));
         return Result(stored);
+    }
+
+    /// <summary>
+    /// Who may hold a transaction. Consumables: one owner. A second player may take over an Apple consumable
+    /// only while the owner has not acked a durable grant, and only when (a) the verified JWS carries an
+    /// appAccountToken equal to the requester's derivation, or (b) the JWS carries no token and the owner bound it
+    /// at least <see cref="ReclaimAfter"/> ago. Entitlements: any number of claims up to
+    /// <see cref="MaxEntitlementClaimants"/> distinct players per original transaction; when the JWS carries a token,
+    /// a new claimant must match it or present a restore (a JWS for the same original transaction freshly re-signed
+    /// by Apple, newer than any the verifier has stored).
+    /// </summary>
+    public static ClaimDecision Decide(ClaimContext context, string playerId, StoreVerdict verdict, DateTimeOffset at, bool allowTransfer)
+    {
+        string derived = AppAccountTokens.Derive(playerId);
+        bool tokenMatches = verdict.AppAccountToken != null && verdict.AppAccountToken == derived;
+        if (verdict.Kind == ProductKind.Consumable)
+        {
+            if (context.TransactionClaims.Count == 0 || context.TransactionClaims.Any(c => c.PlayerId == playerId)) return ClaimDecision.Claimed;
+            const string owned = "transaction_owned_by_another_player";
+            if (!allowTransfer || verdict.Store != ShorepopCatalog.AppleStore) return ClaimDecision.Refused(owned);
+            if (context.TransactionClaims.Any(c => c.AckedUtc != null)) return ClaimDecision.Refused(owned);
+            if (verdict.AppAccountToken != null) return tokenMatches ? ClaimDecision.Transferred("app_account_token") : ClaimDecision.Refused(owned);
+            var bound = context.TransactionClaims.Max(c => c.BoundUtc);
+            return at - bound >= ReclaimAfter ? ClaimDecision.Transferred("unacked_24h") : ClaimDecision.Refused(owned);
+        }
+
+        if (context.GroupClaimants.Contains(playerId) || context.TransactionClaims.Any(c => c.PlayerId == playerId)) return ClaimDecision.Claimed;
+        if (tokenMatches) return ClaimDecision.Claimed;
+        if (verdict.Store == ShorepopCatalog.AppleStore && verdict.AppAccountToken != null)
+        {
+            var signed = DateTimeOffset.FromUnixTimeMilliseconds(Math.Max(0, verdict.SignedDateUnixMs));
+            bool restore = verdict.SignedDateUnixMs > context.GroupLatestSignedDateMs &&
+                signed <= at + ClockSkew && at - signed <= RestoreFreshness;
+            if (!restore) return ClaimDecision.Refused("app_account_token_mismatch");
+        }
+        if (context.GroupClaimants.Count >= MaxEntitlementClaimants) return ClaimDecision.Refused("claimant_limit_reached");
+        return ClaimDecision.Claimed;
+    }
+
+    /// <summary>The client durably committed the grant: an acked consumable can never move to another player.</summary>
+    public AckResult Ack(string playerId, AckRequest? request)
+    {
+        if (request == null) throw new VerifierRefusal(400, "body_required");
+        string storeName = string.IsNullOrEmpty(request.Store) ? ShorepopCatalog.AppleStore : request.Store;
+        RequireStore(storeName, string.IsNullOrEmpty(request.ApplicationId) ? bundleId : request.ApplicationId);
+        string transactionId = request.TransactionId ?? "";
+        if (string.IsNullOrWhiteSpace(transactionId) || transactionId.Length > 8192) throw new VerifierRefusal(422, "transaction_missing");
+        switch (store.Ack(storeName, bundleId, transactionId, playerId, now()))
+        {
+            case AckOutcome.NotFound: throw new VerifierRefusal(404, "transaction_not_found");
+            case AckOutcome.NotClaimant:
+                log.LogWarning("ack refused {Store} tx={Tx}: player is not a claimant", storeName, Digest(transactionId));
+                throw new VerifierRefusal(409, "transaction_owned_by_another_player");
+        }
+        log.LogInformation("ack ok {Store} tx={Tx}", storeName, Digest(transactionId));
+        return new AckResult { TransactionId = transactionId, Acked = true };
     }
 
     public async Task<IReadOnlyList<ValidatedNativePurchase>> ReconcileAsync(string playerId, ReconcileRequest? request, CancellationToken cancel)
@@ -105,8 +177,10 @@ public sealed class PurchaseService(
     private void Ingest(string playerId, StoreVerdict verdict, string? expectedTransactionId)
     {
         if (expectedTransactionId != null && verdict.TransactionId != expectedTransactionId) throw new VerifierRefusal(503, "apple_server_response_mismatch");
-        if (store.Bind(Record(playerId, verdict), ShorepopCatalog.SingleOwner(verdict.Kind)) != playerId)
-            log.LogWarning("reconcile: renewal tx={Tx} already owned by another player; skipped", Digest(verdict.TransactionId));
+        var at = now();
+        var result = store.Bind(Record(playerId, verdict), at, context => Decide(context, playerId, verdict, at, allowTransfer: false));
+        if (result.Decision.Action == ClaimAction.Refuse)
+            log.LogWarning("reconcile: tx={Tx} not bound ({Code}); skipped", Digest(verdict.TransactionId), result.Decision.RefusalCode);
     }
 
     private async Task RefreshGoogle(string playerId, IReadOnlyList<PurchaseRecord> rows, CancellationToken cancel)
@@ -121,7 +195,8 @@ public sealed class PurchaseService(
                 // Google no longer returns this token (purged): keep the last verified state.
                 continue;
             }
-            store.Bind(Record(playerId, verdict), ShorepopCatalog.SingleOwner(verdict.Kind));
+            var at = now();
+            store.Bind(Record(playerId, verdict), at, context => Decide(context, playerId, verdict, at, allowTransfer: false));
         }
     }
 

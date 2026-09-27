@@ -10,15 +10,59 @@ UGS access token and reads the responses below. It is deployed on Render as `sho
 
 | Product type | Products | Rule |
 |---|---|---|
-| Consumable | `gg.shorepop.gems.*`, `gg.shorepop.coins.*`, `lives.refill`, `abilities.bundle`, `welcome`, `shellbank` | **Single owner.** The first player to validate the transaction owns it; any other player gets 409 `transaction_owned_by_another_player`. A consumable grants currency once, so this is the replay protection. |
-| Non-consumable | `gg.shorepop.noads`, `gg.shorepop.starter` | **Follows the store account.** Any authenticated player presenting a validly signed transaction for this bundle gets the entitlement. |
-| Subscription | `gg.shorepop.pass.monthly` | Same as non-consumable, including renewals picked up by reconcile. |
+| Consumable | `gg.shorepop.gems.*`, `gg.shorepop.coins.*`, `lives.refill`, `abilities.bundle`, `welcome`, `shellbank` | **Single owner.** The first player to validate owns it; others get 409 `transaction_owned_by_another_player`. Apple only: while the owner has **not acked** (`POST /v1/purchases/ack`), ownership may move (see below). Once acked it never moves. Google consumables never move. |
+| Non-consumable | `gg.shorepop.noads`, `gg.shorepop.starter` | **Follows the store account, bounded.** Up to 5 distinct players per original transaction (`claimant_limit_reached` beyond). If the verified JWS carries an `appAccountToken`, a new player must match it or present a restore. |
+| Subscription | `gg.shorepop.pass.monthly` | Same as non-consumable; renewals share the original transaction's claimant set and cap. |
 
-Entitlements follow the Apple ID (or Google account) because an iOS reinstall can create a new anonymous
-UGS player, and Restore must still work for that player. Every player that claims a transaction is
-recorded (`claims` table, first claimant first). The transaction's store state is shared by all claimants:
-a refund seen through any claimant is sticky for all of them. `SubscriptionEntitlementRevision` is kept per
-player and only goes up.
+### appAccountToken
+
+The client sets StoreKit's `appAccountToken` at purchase time to a UUID derived from its UGS player id, and
+also sends it as `AppAccountToken` in the proof. The server **only trusts the copy inside the verified JWS**
+(`appAccountToken` in the signed payload) and compares it with its **own** derivation of the authenticated
+player (`sub`). The request field is informational: a mismatch with the server's derivation is logged
+(client derivation bug) and never changes a decision.
+
+Derivation (RFC 4122 UUID version 5, SHA-1), which the client must reproduce exactly:
+
+- namespace: `6ba7b811-9dad-11d1-80b4-00c04fd430c8` (the RFC 4122 URL namespace), as its 16 bytes in network order;
+- name: the UTF-8 bytes of `"shorepop:ugs:" + playerId` (UGS player id exactly as issued, case preserved);
+- `SHA1(namespace bytes + name bytes)`, first 16 bytes; `byte[6] = (byte[6] & 0x0F) | 0x50`; `byte[8] = (byte[8] & 0x3F) | 0x80`;
+- written lowercase, hyphenated 8-4-4-4-12.
+- Test vector: player `abc123` -> `0f752aa9-33c5-54b1-b936-68d3b28f2043` (identical to Python `uuid.uuid5(uuid.NAMESPACE_URL, "shorepop:ugs:abc123")`).
+
+Implementation: `AppAccountTokens.cs`.
+
+### Consumable reclaim (Apple)
+
+A consumable validated by player A whose app died before its durable commit, then reinstalled as a new
+anonymous player B, used to answer 409 forever (charged, never granted). Now, while no claimant has acked:
+
+- the JWS carries a token: the player whose derivation equals it may take the transaction over, at any time;
+  nobody else ever may (after 24 h included);
+- the JWS carries no token: any player may take it over once 24 h have passed since the current owner bound it.
+
+A takeover removes the previous owner's claim (it drops out of their reconcile) and is logged in the
+`transfers` table with the reason (`app_account_token` or `unacked_24h`). After an ack, the owner stays
+single (409 for everyone else). **Clients must ack right after their durable commit and retry the ack until
+it succeeds**: an owner that granted but never acked can lose the transaction to a no-token reclaim after 24 h.
+
+### Entitlements (non-consumable, subscription)
+
+A player who already claims the transaction (or any transaction under the same original transaction) is
+always served. A new player is served when:
+
+- the verified JWS carries no token, or its token equals the player's derivation, or
+- **restore**: the JWS is for the same original transaction, Apple signed it (`signedDate`) within the last
+  24 h, and it is newer than every JWS the verifier has stored for that original transaction. A StoreKit
+  restore on the same Apple account yields such a JWS; a replay of a JWS someone already presented does not
+  (409 `app_account_token_mismatch`).
+
+Then the cap: at most 5 distinct players per original transaction; the 6th gets 409
+`claimant_limit_reached` (logged). The token-matched player is never capped.
+
+Every current claimant is recorded (`claims` table, first claimant first, with bind and ack times). The
+transaction's store state is shared by all claimants: a refund seen through any claimant is sticky for all
+of them. `SubscriptionEntitlementRevision` is kept per player and only goes up.
 
 The type comes from Apple's signed `type` field (`Consumable`, `Non-Consumable`,
 `Auto-Renewable Subscription`), which a client cannot alter without breaking the signature. It is never
@@ -36,6 +80,7 @@ is case-insensitive. Output uses the client's PascalCase field names so Unity's 
 | Route | Body | 200 response |
 |---|---|---|
 | `POST /v1/purchases/validate` | `NativePurchaseProof` | one `ValidatedNativePurchase` |
+| `POST /v1/purchases/ack` | `{"TransactionId":"..."}` (optional `Store`, default `AppleAppStore`; optional `ApplicationId`, must be `com.shorepop.game`) | `{"TransactionId":"...","Acked":true}`; idempotent, first ack time kept |
 | `POST /v1/purchases/reconcile` | `{"Store":"AppleAppStore"\|"GooglePlay","ApplicationId":"com.shorepop.game"}` | `ValidatedNativePurchase[]`, all of this player's known transactions (an empty array is an authoritative "none") |
 | `GET /healthz` | none | `{status, apple, appleServerApi, google, store}` |
 
@@ -45,7 +90,8 @@ Errors are returned as `{"Code":"..."}`:
 |---|---|
 | 400 | `malformed_json`, `body_required` |
 | 401 | `authentication_required` |
-| 409 | `transaction_owned_by_another_player` (consumables only: the first player to validate one owns it), `purchase_pending` (Google) |
+| 404 | `transaction_not_found` (ack for a transaction the verifier has not seen) |
+| 409 | `transaction_owned_by_another_player` (consumable owned by another player; also ack by a non-claimant), `app_account_token_mismatch` (token-bound entitlement, no restore proof), `claimant_limit_reached` (6th player on one entitlement), `purchase_pending` (Google) |
 | 422 | `unknown_store`, `application_mismatch`, `unknown_product`, `transaction_missing`, `apple_signed_transaction_required`, `apple_signature_invalid`, `bundle_mismatch`, `product_mismatch`, `transaction_mismatch`, `quantity_not_one`, `environment_not_allowed`, `type_mismatch`, `expiry_missing`, `purchase_not_found`, `line_items_invalid`, `purchase_state_unknown` |
 | 429 | Rate limit: 20 requests per minute per player, 32 concurrent requests per server |
 | 503 | `verifier_unconfigured`, `google_validation_not_configured`, `authentication_keys_unavailable`, `apple_server_api_unavailable`, `apple_server_response_unverifiable`, `storage_unavailable`, `stored_transaction_unverifiable` |

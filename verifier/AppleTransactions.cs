@@ -46,7 +46,19 @@ public sealed class AppleTransactionChecker(AppleJwsVerifier verifier, string bu
         bool refunded = Millis(payload, "revocationDate") > 0;
         string original = Text(payload, "originalTransactionId");
         return new StoreVerdict(ShorepopCatalog.AppleStore, bundleId, productId, transactionId, environment, refunded, expiry,
-            original.Length == 0 ? null : original, jws, Millis(payload, "signedDate"), ShorepopCatalog.AppleKind(type, productId));
+            original.Length == 0 ? null : original, jws, Millis(payload, "signedDate"), ShorepopCatalog.AppleKind(type, productId),
+            AppAccountToken(payload));
+    }
+
+    /// <summary>
+    /// The signed <c>appAccountToken</c> (StoreKit copies it from the purchase options). Absent or empty means
+    /// "no token". A present value that is not a UUID is kept verbatim so it can never match a derived token.
+    /// </summary>
+    private static string? AppAccountToken(JsonElement payload)
+    {
+        string raw = Text(payload, "appAccountToken").Trim();
+        if (raw.Length == 0) return null;
+        return AppAccountTokens.Normalize(raw) ?? "invalid:" + raw;
     }
 
     private static string Text(JsonElement payload, string name) =>
