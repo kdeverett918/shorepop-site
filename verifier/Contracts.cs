@@ -46,7 +46,14 @@ public sealed class VerifierRefusal(int status, string code) : Exception(code)
 public sealed record StoreVerdict(
     string Store, string ApplicationId, string ProductId, string TransactionId,
     string Environment, bool Refunded, long PurchasedPeriodExpiryUtcTicks,
-    string? OriginalTransactionId, string? SignedPayload, long SignedDateUnixMs);
+    string? OriginalTransactionId, string? SignedPayload, long SignedDateUnixMs, ProductKind Kind);
+
+/// <summary>
+/// How a product binds to players. A consumable grants currency once, so its transaction belongs to the
+/// first player who validates it (replay protection). A non-consumable or subscription is an entitlement
+/// that follows the store account: any authenticated player presenting a validly signed transaction gets it.
+/// </summary>
+public enum ProductKind { Consumable, NonConsumable, Subscription }
 
 public static class ShorepopCatalog
 {
@@ -65,7 +72,36 @@ public static class ShorepopCatalog
         "gg.shorepop.welcome", "gg.shorepop.shellbank",
     };
 
+    // Product types mirror IapCatalog.All (ProductType column): everything else there is Consumable.
+    public static readonly IReadOnlySet<string> NonConsumableIds = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "gg.shorepop.noads", "gg.shorepop.starter",
+    };
+
     public static bool IsSubscription(string productId) => productId == SubscriptionProductId;
+
+    /// <summary>Catalog type; the fallback when the store's signed data carries no type (Google).</summary>
+    public static ProductKind CatalogKind(string productId) =>
+        IsSubscription(productId) ? ProductKind.Subscription
+        : NonConsumableIds.Contains(productId) ? ProductKind.NonConsumable
+        : ProductKind.Consumable;
+
+    /// <summary>
+    /// Kind from Apple's signed <c>type</c>, never looser than the catalog: a product the catalog calls
+    /// consumable stays single-owner even if App Store Connect mislabels it (the client grants currency by product id).
+    /// </summary>
+    public static ProductKind AppleKind(string signedType, string productId) =>
+        CatalogKind(productId) == ProductKind.Consumable ? ProductKind.Consumable
+        : signedType switch
+        {
+            "Consumable" => ProductKind.Consumable,
+            "Non-Consumable" => ProductKind.NonConsumable,
+            "Auto-Renewable Subscription" => ProductKind.Subscription,
+            _ => CatalogKind(productId),
+        };
+
+    /// <summary>Only consumables are bound to the first player; entitlements follow the store account.</summary>
+    public static bool SingleOwner(ProductKind kind) => kind == ProductKind.Consumable;
 
     public static long UnixMsToTicks(long ms) => DateTimeOffset.FromUnixTimeMilliseconds(ms).UtcTicks;
 }

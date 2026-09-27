@@ -124,7 +124,8 @@ public static class GooglePlayInterpreter
             _ => throw new VerifierRefusal(422, "purchase_state_unknown"),
         };
         string environment = body.TryGetProperty("testPurchaseContext", out _) ? "LicenseTest" : "Production";
-        return new StoreVerdict(ShorepopCatalog.GoogleStore, packageName, productId, token, environment, refunded, 0, null, null, 0);
+        return new StoreVerdict(ShorepopCatalog.GoogleStore, packageName, productId, token, environment, refunded, 0, null, null, 0,
+            ShorepopCatalog.CatalogKind(productId));
     }
 
     public static StoreVerdict Subscription(JsonElement body, string packageName, string productId, string token)
@@ -150,7 +151,7 @@ public static class GooglePlayInterpreter
         string linked = Text(body, "linkedPurchaseToken");
         // Revocation/refund of a subscription shows up as EXPIRED with expiryTime moved to the revocation.
         return new StoreVerdict(ShorepopCatalog.GoogleStore, packageName, productId, token, environment, false, expiry,
-            linked.Length == 0 ? null : linked, null, 0);
+            linked.Length == 0 ? null : linked, null, 0, ProductKind.Subscription);
     }
 
     private static string Text(JsonElement e, string name) =>

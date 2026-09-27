@@ -69,6 +69,6 @@ not running, so no image could be built and pushed either.
 
 - **Storage.** Free-plan SQLite resets on every deploy, so transaction ownership is forgotten. Add a
   persistent disk or a Postgres store.
-- **Client.** Write the client `INativePurchaseValidator` that POSTs to this URL with the UGS access token.
-  That change is under `Assets/` and belongs to the integrator.
+- **Client.** Done: `Assets/Scripts/Services/Commerce/HttpNativePurchaseValidator.cs` POSTs to this URL
+  with the UGS access token.
 - **Money review.** The verifier and the client wiring both need an independent money-review pass.

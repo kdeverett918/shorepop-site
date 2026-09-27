@@ -46,7 +46,7 @@ public sealed class AppleTransactionChecker(AppleJwsVerifier verifier, string bu
         bool refunded = Millis(payload, "revocationDate") > 0;
         string original = Text(payload, "originalTransactionId");
         return new StoreVerdict(ShorepopCatalog.AppleStore, bundleId, productId, transactionId, environment, refunded, expiry,
-            original.Length == 0 ? null : original, jws, Millis(payload, "signedDate"));
+            original.Length == 0 ? null : original, jws, Millis(payload, "signedDate"), ShorepopCatalog.AppleKind(type, productId));
     }
 
     private static string Text(JsonElement payload, string name) =>

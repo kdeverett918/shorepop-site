@@ -7,15 +7,23 @@ public sealed record PurchaseRecord(
     bool Refunded, long PurchasedPeriodExpiryUtcTicks, string? OriginalRef, string? SignedPayload, long SignedDateUnixMs);
 
 /// <summary>
-/// Transaction ownership + subscription aggregate. Implementations must make <see cref="Bind"/> atomic:
-/// the first player to bind a (store, applicationId, transactionId) owns it forever.
+/// Transaction state + player claims + subscription aggregate. Implementations must make <see cref="Bind"/> atomic.
+/// One row per (store, applicationId, transactionId) holds the store's state (refunds sticky); a separate claim
+/// set records every player that presented it. Consumables (<c>singleOwner</c>) accept only the first player's claim;
+/// entitlements (non-consumables, subscriptions) accept every authenticated player that presents a valid transaction.
 /// A Postgres implementation (env DATABASE_URL) would slot in here; only SQLite and memory ship today.
 /// </summary>
 public interface IPurchaseStore
 {
-    /// <summary>Inserts or refreshes the row and returns the owning player (which may differ from record.PlayerId).</summary>
-    string Bind(PurchaseRecord record);
+    /// <summary>
+    /// Inserts or refreshes the row. When <paramref name="singleOwner"/> and another player already claimed the
+    /// transaction, nothing is written and that player is returned; otherwise the claim is recorded and record.PlayerId returned.
+    /// </summary>
+    string Bind(PurchaseRecord record, bool singleOwner);
+    /// <summary>Rows this player has claimed; <see cref="PurchaseRecord.PlayerId"/> is the requesting player.</summary>
     IReadOnlyList<PurchaseRecord> List(string playerId, string store, string applicationId);
+    /// <summary>Every player that claimed the transaction, first claimant first.</summary>
+    IReadOnlyList<string> Claimants(string store, string applicationId, string transactionId);
     /// <summary>Recomputes the player's aggregate subscription expiry; the revision increases whenever it changes.</summary>
     (long Revision, long CurrentExpiryUtcTicks) Subscription(string playerId, string store, string applicationId);
     string Kind { get; }
@@ -47,29 +55,39 @@ public sealed class InMemoryPurchaseStore : IPurchaseStore
 {
     private readonly object gate = new();
     private readonly Dictionary<(string, string, string), PurchaseRecord> rows = new();
+    private readonly Dictionary<(string, string, string), List<string>> claims = new();
     private readonly Dictionary<(string, string, string), (long, long)> subscriptions = new();
     public string Kind => "memory";
 
-    public string Bind(PurchaseRecord record)
+    public string Bind(PurchaseRecord record, bool singleOwner)
     {
         lock (gate)
         {
             var key = (record.Store, record.ApplicationId, record.TransactionId);
             if (rows.TryGetValue(key, out var existing))
             {
-                if (existing.PlayerId != record.PlayerId) return existing.PlayerId;
+                var players = claims[key];
+                if (singleOwner && players[0] != record.PlayerId) return players[0];
                 rows[key] = StoreRules.Merge(existing, record);
+                if (!players.Contains(record.PlayerId)) players.Add(record.PlayerId);
                 return record.PlayerId;
             }
             rows[key] = record;
+            claims[key] = [record.PlayerId];
             return record.PlayerId;
         }
     }
 
     public IReadOnlyList<PurchaseRecord> List(string playerId, string store, string applicationId)
     {
-        lock (gate) return rows.Values.Where(r => r.PlayerId == playerId && r.Store == store && r.ApplicationId == applicationId)
+        lock (gate) return rows.Where(r => r.Key.Item1 == store && r.Key.Item2 == applicationId && claims[r.Key].Contains(playerId))
+            .Select(r => r.Value with { PlayerId = playerId })
             .OrderBy(r => r.TransactionId, StringComparer.Ordinal).ToList();
+    }
+
+    public IReadOnlyList<string> Claimants(string store, string applicationId, string transactionId)
+    {
+        lock (gate) return claims.TryGetValue((store, applicationId, transactionId), out var players) ? players.ToList() : [];
     }
 
     public (long Revision, long CurrentExpiryUtcTicks) Subscription(string playerId, string store, string applicationId)
@@ -88,7 +106,7 @@ public sealed class InMemoryPurchaseStore : IPurchaseStore
 
 /// <summary>
 /// SQLite on the container disk. On Render's free plan the disk is ephemeral: the file (and therefore
-/// every transaction-to-player binding) resets on each deploy/restart. Attach a persistent disk
+/// every transaction-to-player claim) resets on each deploy/restart. Attach a persistent disk
 /// (paid plan) or implement the Postgres store before real revenue depends on replay protection.
 /// </summary>
 public sealed class SqlitePurchaseStore : IPurchaseStore
@@ -112,6 +130,14 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
               created_utc TEXT NOT NULL, updated_utc TEXT NOT NULL,
               PRIMARY KEY(store, app_id, transaction_id));
             CREATE INDEX IF NOT EXISTS purchases_player ON purchases(player_id, store, app_id);
+            CREATE TABLE IF NOT EXISTS claims(
+              seq INTEGER PRIMARY KEY AUTOINCREMENT,
+              store TEXT NOT NULL, app_id TEXT NOT NULL, transaction_id TEXT NOT NULL, player_id TEXT NOT NULL,
+              created_utc TEXT NOT NULL,
+              UNIQUE(store, app_id, transaction_id, player_id));
+            CREATE INDEX IF NOT EXISTS claims_player ON claims(player_id, store, app_id);
+            INSERT OR IGNORE INTO claims(store, app_id, transaction_id, player_id, created_utc)
+              SELECT store, app_id, transaction_id, player_id, created_utc FROM purchases ORDER BY created_utc;
             CREATE TABLE IF NOT EXISTS subscriptions(
               player_id TEXT NOT NULL, store TEXT NOT NULL, app_id TEXT NOT NULL, revision INTEGER NOT NULL, expiry_ticks INTEGER NOT NULL,
               PRIMARY KEY(player_id, store, app_id));
@@ -126,7 +152,7 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
         return connection;
     }
 
-    public string Bind(PurchaseRecord record)
+    public string Bind(PurchaseRecord record, bool singleOwner)
     {
         lock (gate)
         {
@@ -134,7 +160,11 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
             using var tx = connection.BeginTransaction(deferred: false);
             var existing = Read(connection, tx, "WHERE store=$s AND app_id=$a AND transaction_id=$t",
                 ("$s", record.Store), ("$a", record.ApplicationId), ("$t", record.TransactionId)).FirstOrDefault();
-            if (existing != null && existing.PlayerId != record.PlayerId) { tx.Commit(); return existing.PlayerId; }
+            if (existing != null && singleOwner)
+            {
+                string first = ClaimantList(connection, tx, record.Store, record.ApplicationId, record.TransactionId).FirstOrDefault() ?? existing.PlayerId;
+                if (first != record.PlayerId) { tx.Commit(); return first; }
+            }
             var row = existing == null ? record : StoreRules.Merge(existing, record);
             string now = DateTime.UtcNow.ToString("O");
             Execute(connection, tx, """
@@ -148,6 +178,8 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
                 ("$env", row.Environment), ("$ref", row.Refunded ? 1 : 0), ("$exp", row.PurchasedPeriodExpiryUtcTicks),
                 ("$orig", (object?)row.OriginalRef ?? DBNull.Value), ("$payload", (object?)row.SignedPayload ?? DBNull.Value),
                 ("$sd", row.SignedDateUnixMs), ("$now", now));
+            Execute(connection, tx, "INSERT OR IGNORE INTO claims(store, app_id, transaction_id, player_id, created_utc) VALUES($s,$a,$t,$p,$now)",
+                ("$s", row.Store), ("$a", row.ApplicationId), ("$t", row.TransactionId), ("$p", record.PlayerId), ("$now", now));
             tx.Commit();
             return record.PlayerId;
         }
@@ -158,9 +190,35 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
         lock (gate)
         {
             using var connection = Open();
-            return Read(connection, null, "WHERE player_id=$p AND store=$s AND app_id=$a ORDER BY transaction_id",
-                ("$p", playerId), ("$s", store), ("$a", applicationId));
+            return ClaimedBy(connection, null, playerId, store, applicationId);
         }
+    }
+
+    public IReadOnlyList<string> Claimants(string store, string applicationId, string transactionId)
+    {
+        lock (gate)
+        {
+            using var connection = Open();
+            return ClaimantList(connection, null, store, applicationId, transactionId);
+        }
+    }
+
+    private static List<PurchaseRecord> ClaimedBy(SqliteConnection connection, SqliteTransaction? tx, string playerId, string store, string applicationId) =>
+        Read(connection, tx, "WHERE store=$s AND app_id=$a AND EXISTS(SELECT 1 FROM claims c WHERE c.store=purchases.store AND " +
+            "c.app_id=purchases.app_id AND c.transaction_id=purchases.transaction_id AND c.player_id=$p) ORDER BY transaction_id",
+            ("$p", playerId), ("$s", store), ("$a", applicationId))
+            .Select(r => r with { PlayerId = playerId }).ToList();
+
+    private static List<string> ClaimantList(SqliteConnection connection, SqliteTransaction? tx, string store, string applicationId, string transactionId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = "SELECT player_id FROM claims WHERE store=$s AND app_id=$a AND transaction_id=$t ORDER BY seq";
+        command.Parameters.AddWithValue("$s", store); command.Parameters.AddWithValue("$a", applicationId); command.Parameters.AddWithValue("$t", transactionId);
+        using var reader = command.ExecuteReader();
+        var list = new List<string>();
+        while (reader.Read()) list.Add(reader.GetString(0));
+        return list;
     }
 
     public (long Revision, long CurrentExpiryUtcTicks) Subscription(string playerId, string store, string applicationId)
@@ -169,8 +227,7 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
         {
             using var connection = Open();
             using var tx = connection.BeginTransaction(deferred: false);
-            long aggregate = StoreRules.Aggregate(Read(connection, tx, "WHERE player_id=$p AND store=$s AND app_id=$a",
-                ("$p", playerId), ("$s", store), ("$a", applicationId)));
+            long aggregate = StoreRules.Aggregate(ClaimedBy(connection, tx, playerId, store, applicationId));
             long revision = 0, expiry = 0;
             using (var command = connection.CreateCommand())
             {

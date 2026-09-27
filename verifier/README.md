@@ -1,9 +1,30 @@
 # Shorepop purchase verifier
 
 An ASP.NET 8 service (same stack as `server/league`) that backs the client's `INativePurchaseValidator`
-contract in `Assets/Scripts/Services/Commerce/NativePurchaseValidation.cs`. It has not been reviewed by
-the money-review lane, and no client `INativePurchaseValidator` HTTP implementation exists yet:
-`NativePurchaseConfiguration.Validator` is still unassigned, so checkout stays disabled.
+contract in `Assets/Scripts/Services/Commerce/NativePurchaseValidation.cs`. The client side is
+`Assets/Scripts/Services/Commerce/HttpNativePurchaseValidator.cs`, which posts the proof with the player's
+UGS access token and reads the responses below. It is deployed on Render as `shorepop-verifier`
+(`https://shorepop-verifier.onrender.com`, from the `shorepop-site` repo, `verifier/`).
+
+## Who a transaction belongs to
+
+| Product type | Products | Rule |
+|---|---|---|
+| Consumable | `gg.shorepop.gems.*`, `gg.shorepop.coins.*`, `lives.refill`, `abilities.bundle`, `welcome`, `shellbank` | **Single owner.** The first player to validate the transaction owns it; any other player gets 409 `transaction_owned_by_another_player`. A consumable grants currency once, so this is the replay protection. |
+| Non-consumable | `gg.shorepop.noads`, `gg.shorepop.starter` | **Follows the store account.** Any authenticated player presenting a validly signed transaction for this bundle gets the entitlement. |
+| Subscription | `gg.shorepop.pass.monthly` | Same as non-consumable, including renewals picked up by reconcile. |
+
+Entitlements follow the Apple ID (or Google account) because an iOS reinstall can create a new anonymous
+UGS player, and Restore must still work for that player. Every player that claims a transaction is
+recorded (`claims` table, first claimant first). The transaction's store state is shared by all claimants:
+a refund seen through any claimant is sticky for all of them. `SubscriptionEntitlementRevision` is kept per
+player and only goes up.
+
+The type comes from Apple's signed `type` field (`Consumable`, `Non-Consumable`,
+`Auto-Renewable Subscription`), which a client cannot alter without breaking the signature. It is never
+looser than the catalog (`IapCatalog.All` in `UnityIapProvider.cs`, mirrored in `Contracts.cs`): a product
+the catalog lists as consumable stays single-owner even if Apple's type says otherwise. Google responses
+carry no type, so Google uses the catalog.
 
 ## Endpoints
 
@@ -24,7 +45,7 @@ Errors are returned as `{"Code":"..."}`:
 |---|---|
 | 400 | `malformed_json`, `body_required` |
 | 401 | `authentication_required` |
-| 409 | `transaction_owned_by_another_player` (the first player to validate a transaction owns it), `purchase_pending` (Google) |
+| 409 | `transaction_owned_by_another_player` (consumables only: the first player to validate one owns it), `purchase_pending` (Google) |
 | 422 | `unknown_store`, `application_mismatch`, `unknown_product`, `transaction_missing`, `apple_signed_transaction_required`, `apple_signature_invalid`, `bundle_mismatch`, `product_mismatch`, `transaction_mismatch`, `quantity_not_one`, `environment_not_allowed`, `type_mismatch`, `expiry_missing`, `purchase_not_found`, `line_items_invalid`, `purchase_state_unknown` |
 | 429 | Rate limit: 20 requests per minute per player, 32 concurrent requests per server |
 | 503 | `verifier_unconfigured`, `google_validation_not_configured`, `authentication_keys_unavailable`, `apple_server_api_unavailable`, `apple_server_response_unverifiable`, `storage_unavailable`, `stored_transaction_unverifiable` |
@@ -72,8 +93,8 @@ aggregate changes. Both come from the store.
 - **With** `APPLE_IAP_KEY_ID`, `APPLE_IAP_ISSUER_ID` and `APPLE_IAP_PRIVATE_KEY` (the `.p8` PEM text;
   literal `\n` is accepted), reconcile calls two App Store Server API endpoints for each stored transaction:
   - **Get Transaction Info** picks up refunds and revocations.
-  - For the pass, **Get All Subscription Statuses** binds renewals that share the same
-    `originalTransactionId` to the same player.
+  - For the pass, **Get All Subscription Statuses** claims renewals that share the same
+    `originalTransactionId` for the same player.
 
   Every response JWS goes through the same chain verification as client proofs.
 - **Without** those keys, reconcile re-verifies each stored signed transaction (at its own `signedDate`)
@@ -90,10 +111,16 @@ aggregate changes. Both come from the store.
 | SQLite (default) | file at `VERIFIER_DB_PATH`, default `/home/app/data/verifier.db` | See the warning below. |
 | In memory | `VERIFIER_STORE=memory` | Lost on every restart. |
 
-**On Render free the container disk is ephemeral.** Transaction-to-player bindings reset on every deploy
-or restart. After a reset, a replayed transaction can be bound to a new player. Before revenue depends on
-replay protection, attach a persistent disk (paid plan) or add a Postgres store (`DATABASE_URL`). The
-interface is ready for it; that store is not implemented.
+**Persistence limit on the free plan.** The service runs on Render's free plan, where the container disk
+is ephemeral: the SQLite file is wiped on every deploy and every restart (including idle spin-downs). That
+erases every transaction record and player claim. After a reset, a consumable transaction that was already
+redeemed can be validated again, and its currency granted again, by a new player. Refunds seen earlier are
+also forgotten until reconcile re-queries Apple or Google. Entitlements are not lost, because restore
+re-presents the signed transaction.
+
+**Before real revenue, move to one of these:**
+- a paid Render instance with a persistent disk mounted at `/home/app/data` (the default `VERIFIER_DB_PATH`), or
+- a Postgres store (`DATABASE_URL`). `IPurchaseStore` is ready for it, but that store is not implemented yet.
 
 The database holds raw Apple JWS values and Google purchase tokens, because reconcile needs them to
 re-query the stores. Logs never contain tokens, receipts, JWS values or raw transaction ids: they carry

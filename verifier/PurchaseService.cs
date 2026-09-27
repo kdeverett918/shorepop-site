@@ -27,16 +27,18 @@ public sealed class PurchaseService(
         }
         else verdict = await GoogleVerdict(productId, transactionId, cancel);
 
+        // Consumables grant currency once: the first player owns the transaction. Entitlements follow the store
+        // account (an iOS reinstall can mint a new anonymous UGS player), so every presenting player gets a claim.
         var record = Record(playerId, verdict);
-        string owner = store.Bind(record);
+        string owner = store.Bind(record, ShorepopCatalog.SingleOwner(verdict.Kind));
         if (owner != playerId)
         {
-            log.LogWarning("validate refused {Store} {Product} tx={Tx}: owned by another player", storeName, productId, Digest(transactionId));
+            log.LogWarning("validate refused {Store} {Product} tx={Tx}: consumable owned by another player", storeName, productId, Digest(transactionId));
             throw new VerifierRefusal(409, "transaction_owned_by_another_player");
         }
         var stored = store.List(playerId, storeName, bundleId).First(r => r.TransactionId == transactionId);
-        log.LogInformation("validate ok {Store} {Product} env={Environment} refunded={Refunded} tx={Tx}",
-            storeName, productId, stored.Environment, stored.Refunded, Digest(transactionId));
+        log.LogInformation("validate ok {Store} {Product} kind={Kind} env={Environment} refunded={Refunded} tx={Tx}",
+            storeName, productId, verdict.Kind, stored.Environment, stored.Refunded, Digest(transactionId));
         return Result(stored);
     }
 
@@ -83,7 +85,7 @@ public sealed class PurchaseService(
             if (signed != null) Ingest(playerId, ServerVerdict(signed), row.TransactionId);
             if (ShorepopCatalog.IsSubscription(row.ProductId) && subscriptionOriginals.Add(row.OriginalRef ?? row.TransactionId))
             {
-                // Renewals are new transactions under the same originalTransactionId: bind them to this player.
+                // Renewals are new transactions under the same originalTransactionId: claim them for this player.
                 foreach (var latest in await appleApi.GetSubscriptionLastTransactionsAsync(row.TransactionId, row.Environment, cancel))
                 {
                     var verdict = ServerVerdict(latest);
@@ -103,7 +105,7 @@ public sealed class PurchaseService(
     private void Ingest(string playerId, StoreVerdict verdict, string? expectedTransactionId)
     {
         if (expectedTransactionId != null && verdict.TransactionId != expectedTransactionId) throw new VerifierRefusal(503, "apple_server_response_mismatch");
-        if (store.Bind(Record(playerId, verdict)) != playerId)
+        if (store.Bind(Record(playerId, verdict), ShorepopCatalog.SingleOwner(verdict.Kind)) != playerId)
             log.LogWarning("reconcile: renewal tx={Tx} already owned by another player; skipped", Digest(verdict.TransactionId));
     }
 
@@ -119,7 +121,7 @@ public sealed class PurchaseService(
                 // Google no longer returns this token (purged): keep the last verified state.
                 continue;
             }
-            store.Bind(Record(playerId, verdict));
+            store.Bind(Record(playerId, verdict), ShorepopCatalog.SingleOwner(verdict.Kind));
         }
     }
 

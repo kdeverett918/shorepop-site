@@ -197,13 +197,72 @@ foreach (var (label, makeStore) in new (string, Func<IPurchaseStore>)[] { ("memo
     var store = makeStore();
     var service = Service(store);
     string jws = chain.Sign(Tx("gg.shorepop.noads", "3000000001", "Non-Consumable"));
-    await CaseAsync($"{label}: first player binds, retry is idempotent, second player gets 409", async () =>
+    await CaseAsync($"{label}: non-consumable restore by a second player (reinstall) -> 200 with the entitlement, both claims recorded", async () =>
     {
         var first = await service.ValidateAsync("playerA", AppleProof("gg.shorepop.noads", "3000000001", jws), default);
         Expect(first.TransactionId == "3000000001" && first.Store == "AppleAppStore" && first.ApplicationId == ShorepopCatalog.BundleId && first.Environment == "Sandbox", "result");
         var again = await service.ValidateAsync("playerA", AppleProof("gg.shorepop.noads", "3000000001", jws), default);
         Expect(again.TransactionId == first.TransactionId, "retry");
-        await RejectsAsync(409, "transaction_owned_by_another_player", () => service.ValidateAsync("playerB", AppleProof("gg.shorepop.noads", "3000000001", jws), default));
+        var restored = await service.ValidateAsync("playerB", AppleProof("gg.shorepop.noads", "3000000001", jws), default);
+        Expect(restored.TransactionId == "3000000001" && restored.ProductId == "gg.shorepop.noads" && !restored.Refunded, "restore result");
+        var bRows = await service.ReconcileAsync("playerB", new ReconcileRequest { Store = ShorepopCatalog.AppleStore, ApplicationId = ShorepopCatalog.BundleId }, default);
+        Expect(bRows.Count == 1 && bRows[0].ProductId == "gg.shorepop.noads", "playerB reconcile sees the entitlement");
+        var claimants = store.Claimants(ShorepopCatalog.AppleStore, ShorepopCatalog.BundleId, "3000000001");
+        Expect(claimants.SequenceEqual(["playerA", "playerB"]), "claimants " + string.Join(",", claimants));
+        string starter = chain.Sign(Tx("gg.shorepop.starter", "3000000002", "Non-Consumable"));
+        await service.ValidateAsync("playerA", AppleProof("gg.shorepop.starter", "3000000002", starter), default);
+        Expect((await service.ValidateAsync("playerB", AppleProof("gg.shorepop.starter", "3000000002", starter), default)).ProductId == "gg.shorepop.starter", "starter restore");
+    });
+    await CaseAsync($"{label}: consumable presented by a second player -> 409, not claimed", async () =>
+    {
+        string[] consumables = ["gg.shorepop.gems.80", "gg.shorepop.coins.600", "gg.shorepop.lives.refill", "gg.shorepop.abilities.bundle", "gg.shorepop.welcome", "gg.shorepop.shellbank"];
+        for (int i = 0; i < consumables.Length; i++)
+        {
+            string product = consumables[i], id = "310000000" + i;
+            string gems = chain.Sign(Tx(product, id));
+            await service.ValidateAsync("playerC", AppleProof(product, id, gems), default);
+            await RejectsAsync(409, "transaction_owned_by_another_player", () => service.ValidateAsync("playerD", AppleProof(product, id, gems), default));
+            Expect(store.Claimants(ShorepopCatalog.AppleStore, ShorepopCatalog.BundleId, id).SequenceEqual(["playerC"]), "only the owner claims " + product);
+        }
+        Expect(store.List("playerD", ShorepopCatalog.AppleStore, ShorepopCatalog.BundleId).Count == 0, "playerD has nothing");
+    });
+    await CaseAsync($"{label}: catalog consumable signed as Non-Consumable stays single-owner", async () =>
+    {
+        string mislabeled = chain.Sign(Tx("gg.shorepop.gems.550", "3200000001", "Non-Consumable"));
+        await service.ValidateAsync("playerC", AppleProof("gg.shorepop.gems.550", "3200000001", mislabeled), default);
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => service.ValidateAsync("playerD", AppleProof("gg.shorepop.gems.550", "3200000001", mislabeled), default));
+    });
+    await CaseAsync($"{label}: consumable with its type field tampered to Non-Consumable fails the signature", async () =>
+    {
+        var p = chain.Sign(Tx("gg.shorepop.gems.1200", "3300000001")).Split('.');
+        string forged = p[0] + "." + B64(JsonSerializer.SerializeToUtf8Bytes(Tx("gg.shorepop.gems.1200", "3300000001", "Non-Consumable"))) + "." + p[2];
+        await RejectsAsync(422, "apple_signature_invalid", () => service.ValidateAsync("playerE", AppleProof("gg.shorepop.gems.1200", "3300000001", forged), default));
+        Expect(store.Claimants(ShorepopCatalog.AppleStore, ShorepopCatalog.BundleId, "3300000001").Count == 0, "nothing bound");
+    });
+    await CaseAsync($"{label}: refund on a shared entitlement is sticky for every claimant", async () =>
+    {
+        var tx = Tx("gg.shorepop.noads", "3400000001", "Non-Consumable");
+        string clean = chain.Sign(tx);
+        await service.ValidateAsync("playerF", AppleProof("gg.shorepop.noads", "3400000001", clean), default);
+        tx["revocationDate"] = nowMs; tx["signedDate"] = nowMs + 5;
+        Expect((await service.ValidateAsync("playerG", AppleProof("gg.shorepop.noads", "3400000001", chain.Sign(tx)), default)).Refunded, "refund via second player");
+        Expect((await service.ValidateAsync("playerF", AppleProof("gg.shorepop.noads", "3400000001", clean), default)).Refunded, "older clean JWS cannot un-refund");
+        Expect((await service.ValidateAsync("playerH", AppleProof("gg.shorepop.noads", "3400000001", clean), default)).Refunded, "new claimant sees the refund");
+    });
+    await CaseAsync($"{label}: subscription restore by a second player; revision monotonic per player", async () =>
+    {
+        var t = Tx(ShorepopCatalog.SubscriptionProductId, "4100000001", "Auto-Renewable Subscription"); t["expiresDate"] = nowMs + 3 * 86400000L;
+        string signed = chain.Sign(t);
+        var a1 = await service.ValidateAsync("playerSA", AppleProof(ShorepopCatalog.SubscriptionProductId, "4100000001", signed), default);
+        var b1 = await service.ValidateAsync("playerSB", AppleProof(ShorepopCatalog.SubscriptionProductId, "4100000001", signed), default);
+        Expect(b1.CurrentSubscriptionExpiryUtcTicks == a1.CurrentSubscriptionExpiryUtcTicks && b1.CurrentSubscriptionExpiryUtcTicks > 0 && b1.SubscriptionEntitlementRevision >= 1, "restored pass");
+        var b1b = await service.ValidateAsync("playerSB", AppleProof(ShorepopCatalog.SubscriptionProductId, "4100000001", signed), default);
+        Expect(b1b.SubscriptionEntitlementRevision == b1.SubscriptionEntitlementRevision, "unchanged state keeps playerSB's revision");
+        t["revocationDate"] = nowMs; t["signedDate"] = nowMs + 5;
+        var b2 = await service.ValidateAsync("playerSB", AppleProof(ShorepopCatalog.SubscriptionProductId, "4100000001", chain.Sign(t)), default);
+        Expect(b2.Refunded && b2.CurrentSubscriptionExpiryUtcTicks == 0 && b2.SubscriptionEntitlementRevision == b1.SubscriptionEntitlementRevision + 1, "refund bumps playerSB");
+        var a2 = await service.ValidateAsync("playerSA", AppleProof(ShorepopCatalog.SubscriptionProductId, "4100000001", signed), default);
+        Expect(a2.Refunded && a2.CurrentSubscriptionExpiryUtcTicks == 0 && a2.SubscriptionEntitlementRevision == a1.SubscriptionEntitlementRevision + 1, "refund bumps playerSA too");
     });
     await CaseAsync($"{label}: subscription revision is monotonic and tracks the aggregate expiry", async () =>
     {
@@ -231,7 +290,7 @@ foreach (var (label, makeStore) in new (string, Func<IPurchaseStore>)[] { ("memo
     await CaseAsync($"{label}: reconcile (no Apple key) returns only this player's rows", async () =>
     {
         var rows = await service.ReconcileAsync("playerA", new ReconcileRequest { Store = ShorepopCatalog.AppleStore, ApplicationId = ShorepopCatalog.BundleId }, default);
-        Expect(rows.Count == 1 && rows[0].ProductId == "gg.shorepop.noads", "rows " + rows.Count);
+        Expect(rows.Count == 2 && rows.Select(r => r.ProductId).SequenceEqual(["gg.shorepop.noads", "gg.shorepop.starter"]), "rows " + rows.Count);
         var none = await service.ReconcileAsync("playerZ", new ReconcileRequest { Store = ShorepopCatalog.AppleStore, ApplicationId = ShorepopCatalog.BundleId }, default);
         Expect(none.Count == 0, "empty");
     });
@@ -252,12 +311,15 @@ foreach (var (label, makeStore) in new (string, Func<IPurchaseStore>)[] { ("memo
         Expect(!new GooglePlayApi(new HttpClient(), null).Configured && !new GooglePlayApi(new HttpClient(), "not json").Configured, "configured flag");
     });
 }
-Case("sqlite: bindings survive a new store instance on the same file", () =>
+Case("sqlite: claims survive a new store instance on the same file", () =>
 {
     var reopened = new SqlitePurchaseStore(dbPath);
-    Expect(reopened.List("playerA", ShorepopCatalog.AppleStore, ShorepopCatalog.BundleId).Count == 1, "persisted");
-    var rec = new PurchaseRecord(ShorepopCatalog.AppleStore, ShorepopCatalog.BundleId, "3000000001", "playerB", "gg.shorepop.noads", "Sandbox", false, 0, null, null, 0);
-    Expect(reopened.Bind(rec) == "playerA", "owner kept");
+    Expect(reopened.List("playerA", ShorepopCatalog.AppleStore, ShorepopCatalog.BundleId).Count == 2, "persisted");
+    Expect(reopened.List("playerB", ShorepopCatalog.AppleStore, ShorepopCatalog.BundleId).Count == 2, "restore claims persisted");
+    var rec = new PurchaseRecord(ShorepopCatalog.AppleStore, ShorepopCatalog.BundleId, "3000000001", "playerX", "gg.shorepop.noads", "Sandbox", false, 0, null, null, 0);
+    Expect(reopened.Bind(rec, singleOwner: true) == "playerA", "single-owner bind reports the first claimant");
+    Expect(reopened.Bind(rec, singleOwner: false) == "playerX", "entitlement bind adds a claim");
+    Expect(reopened.Claimants(ShorepopCatalog.AppleStore, ShorepopCatalog.BundleId, "3000000001").SequenceEqual(["playerA", "playerB", "playerX"]), "claim order");
 });
 
 await CaseAsync("google (fake API): product states, quantity, test purchases, subscription expiry", async () =>
@@ -279,12 +341,15 @@ await CaseAsync("google (fake API): product states, quantity, test purchases, su
     await RejectsAsync(422, "product_mismatch", () => service.ValidateAsync("g1", G("gg.shorepop.gems.2800", "tok-ok"), default));
     await RejectsAsync(422, "purchase_not_found", () => service.ValidateAsync("g1", G("gg.shorepop.gems.80", "tok-unknown"), default));
     await RejectsAsync(409, "transaction_owned_by_another_player", () => service.ValidateAsync("g2", G("gg.shorepop.gems.80", "tok-ok"), default));
+    google.Products["tok-noads"] = """{"productLineItem":[{"productId":"gg.shorepop.noads"}],"purchaseStateContext":{"purchaseState":"PURCHASED"}}""";
+    await service.ValidateAsync("g1", G("gg.shorepop.noads", "tok-noads"), default);
+    Expect((await service.ValidateAsync("g2", G("gg.shorepop.noads", "tok-noads"), default)).ProductId == "gg.shorepop.noads", "google non-consumable restore (catalog type)");
     google.Subscriptions["tok-sub"] = """{"subscriptionState":"SUBSCRIPTION_STATE_ACTIVE","lineItems":[{"productId":"gg.shorepop.pass.monthly","expiryTime":"2030-01-02T03:04:05.678Z"}]}""";
     var sub = await service.ValidateAsync("g1", G(ShorepopCatalog.SubscriptionProductId, "tok-sub"), default);
     Expect(sub.PurchasedPeriodExpiryUtcTicks == new DateTime(2030, 1, 2, 3, 4, 5, 678, DateTimeKind.Utc).Ticks && sub.SubscriptionEntitlementRevision == 1, "sub expiry");
     google.Products["tok-ok"] = """{"productLineItem":[{"productId":"gg.shorepop.gems.80"}],"purchaseStateContext":{"purchaseState":"CANCELLED"}}""";
     var rows = await service.ReconcileAsync("g1", new ReconcileRequest { Store = ShorepopCatalog.GoogleStore, ApplicationId = ShorepopCatalog.BundleId }, default);
-    Expect(rows.Count == 4 && rows.Single(r => r.TransactionId == "tok-ok").Refunded, "reconcile sees the later refund");
+    Expect(rows.Count == 5 && rows.Single(r => r.TransactionId == "tok-ok").Refunded, "reconcile sees the later refund");
 });
 
 await CaseAsync("apple reconcile (fake App Store Server API): later refund and renewal are picked up", async () =>
@@ -312,6 +377,18 @@ await CaseAsync("apple reconcile (fake App Store Server API): later refund and r
         pass.SubscriptionEntitlementRevision > first.SubscriptionEntitlementRevision, "aggregate moved to the renewal");
     api.Transactions["6000000009"] = new AppleJwsVerifierTamper().Tamper(chain.Sign(coins));
     await RejectsAsync(503, "apple_server_response_unverifiable", () => service.ReconcileAsync("pa", new ReconcileRequest { Store = ShorepopCatalog.AppleStore, ApplicationId = ShorepopCatalog.BundleId }, default));
+});
+
+Case("catalog kinds mirror IapCatalog; Apple type never loosens a consumable", () =>
+{
+    var consumables = ShorepopCatalog.ProductIds.Where(id => ShorepopCatalog.CatalogKind(id) == ProductKind.Consumable).OrderBy(x => x, StringComparer.Ordinal).ToArray();
+    Expect(consumables.Length == 11 && consumables.All(id => id.Contains(".gems.") || id.Contains(".coins.") || id is "gg.shorepop.lives.refill"
+        or "gg.shorepop.abilities.bundle" or "gg.shorepop.welcome" or "gg.shorepop.shellbank"), "consumable set " + string.Join(",", consumables));
+    Expect(ShorepopCatalog.CatalogKind("gg.shorepop.noads") == ProductKind.NonConsumable && ShorepopCatalog.CatalogKind("gg.shorepop.starter") == ProductKind.NonConsumable, "non-consumables");
+    Expect(ShorepopCatalog.CatalogKind(ShorepopCatalog.SubscriptionProductId) == ProductKind.Subscription, "subscription");
+    Expect(ShorepopCatalog.AppleKind("Non-Consumable", "gg.shorepop.gems.80") == ProductKind.Consumable, "mislabeled consumable");
+    Expect(ShorepopCatalog.AppleKind("Consumable", "gg.shorepop.noads") == ProductKind.Consumable, "Apple's stricter type wins");
+    Expect(ShorepopCatalog.AppleKind("Non-Consumable", "gg.shorepop.noads") == ProductKind.NonConsumable, "noads");
 });
 
 Case("ugs claims: project id, single subject, nbf required", () =>
