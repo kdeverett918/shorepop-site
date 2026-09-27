@@ -10,7 +10,7 @@ UGS access token and reads the responses below. It is deployed on Render as `sho
 
 | Product type | Products | Rule |
 |---|---|---|
-| Consumable | `gg.shorepop.gems.*`, `gg.shorepop.coins.*`, `lives.refill`, `abilities.bundle`, `welcome`, `shellbank` | **Single owner.** The first player to validate owns it; others get 409 `transaction_owned_by_another_player`. Apple only: while the owner has **not acked** (`POST /v1/purchases/ack`), ownership may move (see below). Once acked it never moves. Google consumables never move. |
+| Consumable | `gg.shorepop.gems.*`, `gg.shorepop.coins.*`, `lives.refill`, `abilities.bundle`, `welcome`, `shellbank` | **Single owner.** The first player to validate owns it; others get 409 `transaction_owned_by_another_player`. Apple only: while the owner has **not acked** (`POST /v1/purchases/ack`), ownership may move: to the token-matched player at any time, to anyone 24 h after the last claim. Once acked it never moves. Google consumables never move. |
 | Non-consumable | `gg.shorepop.noads`, `gg.shorepop.starter` | **Follows the store account, bounded.** Up to 5 distinct players per original transaction (`claimant_limit_reached` beyond). If the verified JWS carries an `appAccountToken`, a new player must match it or present a restore. |
 | Subscription | `gg.shorepop.pass.monthly` | Same as non-consumable; renewals share the original transaction's claimant set and cap. |
 
@@ -37,14 +37,15 @@ Implementation: `AppAccountTokens.cs`.
 A consumable validated by player A whose app died before its durable commit, then reinstalled as a new
 anonymous player B, used to answer 409 forever (charged, never granted). Now, while no claimant has acked:
 
-- the JWS carries a token: the player whose derivation equals it may take the transaction over, at any time;
-  nobody else ever may (after 24 h included);
-- the JWS carries no token: any player may take it over once 24 h have passed since the current owner bound it.
+- the JWS carries a token: the player whose derivation equals it may take the transaction over at any time;
+- any player (token or not, matching or not) may take it over once 24 h have passed since the last claim
+  (reason `unacked_24h_mismatch` when the JWS carries a token that does not match, `unacked_24h` when it carries none).
+  This covers the reinstall case: the new anonymous player's derived token can never match the old one.
 
 A takeover removes the previous owner's claim (it drops out of their reconcile) and is logged in the
-`transfers` table with the reason (`app_account_token` or `unacked_24h`). After an ack, the owner stays
+`transfers` table with the reason (`app_account_token`, `unacked_24h_mismatch` or `unacked_24h`). After an ack, the owner stays
 single (409 for everyone else). **Clients must ack right after their durable commit and retry the ack until
-it succeeds**: an owner that granted but never acked can lose the transaction to a no-token reclaim after 24 h.
+it succeeds**: an owner that granted but never acked can lose the transaction to any player 24 h after the last claim.
 
 ### Entitlements (non-consumable, subscription)
 

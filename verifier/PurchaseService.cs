@@ -10,7 +10,7 @@ public sealed class PurchaseService(
 {
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
-    /// <summary>An unacked consumable whose JWS carries no appAccountToken may be reclaimed by another player after this.</summary>
+    /// <summary>An unacked Apple consumable may be taken over by any player this long after its last claim.</summary>
     public static readonly TimeSpan ReclaimAfter = TimeSpan.FromHours(24);
     /// <summary>Distinct players that may hold one entitlement (per original transaction); the token-matched player is never capped.</summary>
     public const int MaxEntitlementClaimants = 5;
@@ -61,8 +61,8 @@ public sealed class PurchaseService(
     /// <summary>
     /// Who may hold a transaction. Consumables: one owner. A second player may take over an Apple consumable
     /// only while the owner has not acked a durable grant, and only when (a) the verified JWS carries an
-    /// appAccountToken equal to the requester's derivation, or (b) the JWS carries no token and the owner bound it
-    /// at least <see cref="ReclaimAfter"/> ago. Entitlements: any number of claims up to
+    /// appAccountToken equal to the requester's derivation (any time), or (b) the last claim is at least
+    /// <see cref="ReclaimAfter"/> old (any player, token or not). Entitlements: any number of claims up to
     /// <see cref="MaxEntitlementClaimants"/> distinct players per original transaction; when the JWS carries a token,
     /// a new claimant must match it or present a restore (a JWS for the same original transaction freshly re-signed
     /// by Apple, newer than any the verifier has stored).
@@ -77,9 +77,12 @@ public sealed class PurchaseService(
             const string owned = "transaction_owned_by_another_player";
             if (!allowTransfer || verdict.Store != ShorepopCatalog.AppleStore) return ClaimDecision.Refused(owned);
             if (context.TransactionClaims.Any(c => c.AckedUtc != null)) return ClaimDecision.Refused(owned);
-            if (verdict.AppAccountToken != null) return tokenMatches ? ClaimDecision.Transferred("app_account_token") : ClaimDecision.Refused(owned);
+            if (tokenMatches) return ClaimDecision.Transferred("app_account_token");
+            // Unacked 24 h after the last claim: the owner never durably granted (e.g. killed before commit, then
+            // reinstalled as a new anonymous player whose derived token cannot match), so any player may take over.
             var bound = context.TransactionClaims.Max(c => c.BoundUtc);
-            return at - bound >= ReclaimAfter ? ClaimDecision.Transferred("unacked_24h") : ClaimDecision.Refused(owned);
+            if (at - bound < ReclaimAfter) return ClaimDecision.Refused(owned);
+            return ClaimDecision.Transferred(verdict.AppAccountToken != null ? "unacked_24h_mismatch" : "unacked_24h");
         }
 
         if (context.GroupClaimants.Contains(playerId) || context.TransactionClaims.Any(c => c.PlayerId == playerId)) return ClaimDecision.Claimed;

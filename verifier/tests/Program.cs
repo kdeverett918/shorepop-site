@@ -350,15 +350,26 @@ foreach (var (label, makeStore) in new (string, Func<IPurchaseStore>)[] { ("memo
         Expect((await timed.ValidateAsync("squatter2", AppleProof("gg.shorepop.gems.260", "7000000002", signed), default)).TransactionId == "7000000002", "owner retry still 200");
         Expect(store.Transfers(A, B, "7000000002").Count == 0, "no transfer");
     });
-    await CaseAsync($"{label}: consumable with token: a mismatched player never reclaims, even after 24 h unacked", async () =>
+    await CaseAsync($"{label}: consumable with token (killed before commit, reinstalled as a new player): mismatched player 409 inside 24 h, takeover after (unacked_24h_mismatch), 409 after ack", async () =>
     {
-        clockNow = DateTimeOffset.UtcNow;
+        var t0 = DateTimeOffset.UtcNow; clockNow = t0;
         string signed = chain.Sign(TokTx("gg.shorepop.coins.600", "7000000003", AppAccountTokens.Derive("buyer3")));
         await timed.ValidateAsync("buyer3", AppleProof("gg.shorepop.coins.600", "7000000003", signed), default);
-        clockNow = clockNow.AddHours(48);
+        clockNow = t0.AddHours(23);
         var forged = AppleProof("gg.shorepop.coins.600", "7000000003", signed); forged.AppAccountToken = AppAccountTokens.Derive("buyer3");
-        await RejectsAsync(409, "transaction_owned_by_another_player", () => timed.ValidateAsync("thief3", forged, default));
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => timed.ValidateAsync("reinstall3", forged, default));
         Expect(store.Claimants(A, B, "7000000003").SequenceEqual(["buyer3"]), "request field alone never binds");
+        clockNow = t0.AddHours(24).AddMinutes(1);
+        Expect((await timed.ValidateAsync("reinstall3", AppleProof("gg.shorepop.coins.600", "7000000003", signed), default)).TransactionId == "7000000003", "takeover");
+        var moves = store.Transfers(A, B, "7000000003");
+        Expect(moves.Count == 1 && moves[0].FromPlayer == "buyer3" && moves[0].ToPlayer == "reinstall3" && moves[0].Reason == "unacked_24h_mismatch", "transfer log");
+        Expect(store.List("buyer3", A, B).All(r => r.TransactionId != "7000000003"), "old owner lost the row");
+        clockNow = t0.AddHours(30);
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => timed.ValidateAsync("third3", AppleProof("gg.shorepop.coins.600", "7000000003", signed), default));
+        timed.Ack("reinstall3", new AckRequest { TransactionId = "7000000003" });
+        clockNow = t0.AddDays(20);
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => timed.ValidateAsync("third3", AppleProof("gg.shorepop.coins.600", "7000000003", signed), default));
+        await RejectsAsync(409, "transaction_owned_by_another_player", () => timed.ValidateAsync("buyer3", AppleProof("gg.shorepop.coins.600", "7000000003", signed), default));
     });
     await CaseAsync($"{label}: consumable without token (killed before commit, reinstalled): 409 inside 24 h, reclaim after, 409 after the new owner acks", async () =>
     {
