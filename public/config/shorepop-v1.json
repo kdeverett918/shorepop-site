@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "updated": "2026-09-26",
+  "interstitial_enabled": true,
+  "holdout_percent": 0,
+  "interstitial_cooldown_seconds": 180,
+  "interstitial_session_cap": 2,
+  "interstitial_daily_cap": 3,
+  "continue_ladder_gems": [60, 120, 240],
+  "welcome_pack_enabled": true,
+  "shell_bank_enabled": true,
+  "hard_level_payout": 1.5,
+  "super_hard_level_payout": 2.0,
+  "difficulty_schedule": "hard-v1",
+  "notify_lives_full": true,
+  "notify_daily_gift": true,
+  "notify_comeback": true,
+  "max_ads_enabled": true
+}
