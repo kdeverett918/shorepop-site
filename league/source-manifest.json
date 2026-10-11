@@ -3,174 +3,217 @@
   "sourceBaseCommit": "070ac03ca92ddc3ed20fa4c473e9f92556294b40",
   "rootCoreSnapshot": "Current root copied read-only before implementation; hashes are authoritative",
   "rules": "shorepop-big-wave-v4",
+  "packageLineEndings": "LF; no source-text edits",
   "inputs": [
     {
       "path": "Assets/Scripts/Core/Analytics.cs",
-      "sha256": "190185b3828d2dd61b8aff2a3caab24dd177eaae645b8bb1d1c6fa859d889c78"
+      "sha256": "190185b3828d2dd61b8aff2a3caab24dd177eaae645b8bb1d1c6fa859d889c78",
+      "sourceSha256": "190185b3828d2dd61b8aff2a3caab24dd177eaae645b8bb1d1c6fa859d889c78"
     },
     {
       "path": "Assets/Scripts/Core/BoardModel.cs",
-      "sha256": "b3625c9ca7fca2b65d2b3389b76c57b2e6e2807ac00fb613711d87ad358e6bbc"
+      "sha256": "b3625c9ca7fca2b65d2b3389b76c57b2e6e2807ac00fb613711d87ad358e6bbc",
+      "sourceSha256": "b3625c9ca7fca2b65d2b3389b76c57b2e6e2807ac00fb613711d87ad358e6bbc"
     },
     {
       "path": "Assets/Scripts/Core/BoardPreview.cs",
-      "sha256": "741931e3afa75571e8856c1623959d8effa151af9ba77aed62e1f6b6650f8100"
+      "sha256": "3519c6b0a1894cc63174745e74fb56427c538b2e0ef39cea6d951a604b40590c",
+      "sourceSha256": "741931e3afa75571e8856c1623959d8effa151af9ba77aed62e1f6b6650f8100"
     },
     {
       "path": "Assets/Scripts/Core/Boosters.cs",
-      "sha256": "11592f9d7709bc5c37d4de1c3d588c1d6c98e05f7dc0f4165cd249f7a0581d7d"
+      "sha256": "11592f9d7709bc5c37d4de1c3d588c1d6c98e05f7dc0f4165cd249f7a0581d7d",
+      "sourceSha256": "11592f9d7709bc5c37d4de1c3d588c1d6c98e05f7dc0f4165cd249f7a0581d7d"
     },
     {
       "path": "Assets/Scripts/Core/CompanionRegistry.cs",
-      "sha256": "2e1dcbf2766aebc8240476ce4c79795bbac7ea2cd4e7d9e6e407ce21a926d0a0"
+      "sha256": "2e1dcbf2766aebc8240476ce4c79795bbac7ea2cd4e7d9e6e407ce21a926d0a0",
+      "sourceSha256": "2e1dcbf2766aebc8240476ce4c79795bbac7ea2cd4e7d9e6e407ce21a926d0a0"
     },
     {
       "path": "Assets/Scripts/Core/CoreTypes.cs",
-      "sha256": "1e8a60cf045b0c564dd1071491d96cc05452b6f38c3db29bdd7fa4a262a36240"
+      "sha256": "1e8a60cf045b0c564dd1071491d96cc05452b6f38c3db29bdd7fa4a262a36240",
+      "sourceSha256": "1e8a60cf045b0c564dd1071491d96cc05452b6f38c3db29bdd7fa4a262a36240"
     },
     {
       "path": "Assets/Scripts/Core/DailyChallengeCatalog.cs",
-      "sha256": "5231309d6bdf5e44b3b194d1389cabfe3249ca452fc58f74618d9ad9f938b28d"
+      "sha256": "5231309d6bdf5e44b3b194d1389cabfe3249ca452fc58f74618d9ad9f938b28d",
+      "sourceSha256": "5231309d6bdf5e44b3b194d1389cabfe3249ca452fc58f74618d9ad9f938b28d"
     },
     {
       "path": "Assets/Scripts/Core/DailyRewardCalendar.cs",
-      "sha256": "8979603f427dfe82150aee2dc1023676a1854b3a9ae65b6528b8d764a29ee9a8"
+      "sha256": "8979603f427dfe82150aee2dc1023676a1854b3a9ae65b6528b8d764a29ee9a8",
+      "sourceSha256": "8979603f427dfe82150aee2dc1023676a1854b3a9ae65b6528b8d764a29ee9a8"
     },
     {
       "path": "Assets/Scripts/Core/DailyTideCatalog.cs",
-      "sha256": "d21f6b20a635fa621727ffd93e4c1a591ea81b17af41dbd5c7587dc2199aa2c9"
+      "sha256": "d21f6b20a635fa621727ffd93e4c1a591ea81b17af41dbd5c7587dc2199aa2c9",
+      "sourceSha256": "d21f6b20a635fa621727ffd93e4c1a591ea81b17af41dbd5c7587dc2199aa2c9"
     },
     {
       "path": "Assets/Scripts/Core/Fishing.cs",
-      "sha256": "03fc1b1ba870b21792ae5352aac08b5a5712a9e8d88e428b12d6b492bf36c932"
+      "sha256": "03fc1b1ba870b21792ae5352aac08b5a5712a9e8d88e428b12d6b492bf36c932",
+      "sourceSha256": "03fc1b1ba870b21792ae5352aac08b5a5712a9e8d88e428b12d6b492bf36c932"
     },
     {
       "path": "Assets/Scripts/Core/HapticPolicy.cs",
-      "sha256": "da29a3a716464edd696e203196f8b1959bdb8b7fa219beb56045925d492dab29"
+      "sha256": "da29a3a716464edd696e203196f8b1959bdb8b7fa219beb56045925d492dab29",
+      "sourceSha256": "da29a3a716464edd696e203196f8b1959bdb8b7fa219beb56045925d492dab29"
     },
     {
       "path": "Assets/Scripts/Core/LevelCatalog.cs",
-      "sha256": "2beab98cb0882cc3a5bcf45d7440673edc6c2f30b0e203a122640af0d7b31086"
+      "sha256": "2beab98cb0882cc3a5bcf45d7440673edc6c2f30b0e203a122640af0d7b31086",
+      "sourceSha256": "2beab98cb0882cc3a5bcf45d7440673edc6c2f30b0e203a122640af0d7b31086"
     },
     {
       "path": "Assets/Scripts/Core/MechanicTeaching.cs",
-      "sha256": "6dc78237eb9343ba513fef832f09dc86bbb6a924f7fb44a1ab56cc8ec6ceeb7a"
+      "sha256": "6dc78237eb9343ba513fef832f09dc86bbb6a924f7fb44a1ab56cc8ec6ceeb7a",
+      "sourceSha256": "6dc78237eb9343ba513fef832f09dc86bbb6a924f7fb44a1ab56cc8ec6ceeb7a"
     },
     {
       "path": "Assets/Scripts/Core/Narration.cs",
-      "sha256": "5b681ddf17af34366d82f357d06df257701ad11bb0f43ff2be21cc9ab1f90241"
+      "sha256": "5b681ddf17af34366d82f357d06df257701ad11bb0f43ff2be21cc9ab1f90241",
+      "sourceSha256": "5b681ddf17af34366d82f357d06df257701ad11bb0f43ff2be21cc9ab1f90241"
     },
     {
       "path": "Assets/Scripts/Core/RewardChests.cs",
-      "sha256": "167d63ca33cb2cb63aa35c79ee0047a59360678b5a9f5eafb4675ad8681b7142"
+      "sha256": "167d63ca33cb2cb63aa35c79ee0047a59360678b5a9f5eafb4675ad8681b7142",
+      "sourceSha256": "167d63ca33cb2cb63aa35c79ee0047a59360678b5a9f5eafb4675ad8681b7142"
     },
     {
       "path": "Assets/Scripts/Core/SessionGuidance.cs",
-      "sha256": "81a6a37b94536a311dc3b90fb8c91cd1f492e5e899c75eeecf067fe7247c6989"
+      "sha256": "81a6a37b94536a311dc3b90fb8c91cd1f492e5e899c75eeecf067fe7247c6989",
+      "sourceSha256": "81a6a37b94536a311dc3b90fb8c91cd1f492e5e899c75eeecf067fe7247c6989"
     },
     {
       "path": "Assets/Scripts/Core/Strings.cs",
-      "sha256": "07161a29014ecb85b014f1a8dc0ca87ab4e9a9204344bee4170f7c98fcfac1b1"
+      "sha256": "07161a29014ecb85b014f1a8dc0ca87ab4e9a9204344bee4170f7c98fcfac1b1",
+      "sourceSha256": "07161a29014ecb85b014f1a8dc0ca87ab4e9a9204344bee4170f7c98fcfac1b1"
     },
     {
       "path": "Assets/Scripts/Core/TapGate.cs",
-      "sha256": "1499c4fb868c91839dfc203f174c93f40144cc1ac73dae8a5cf2ddad6a2d793d"
+      "sha256": "1499c4fb868c91839dfc203f174c93f40144cc1ac73dae8a5cf2ddad6a2d793d",
+      "sourceSha256": "1499c4fb868c91839dfc203f174c93f40144cc1ac73dae8a5cf2ddad6a2d793d"
     },
     {
       "path": "Assets/Scripts/Core/WinStreak.cs",
-      "sha256": "33eebf29345fc400f86c6975366ab5a2141f63492b9a1171a72354c8e8b213b4"
+      "sha256": "33eebf29345fc400f86c6975366ab5a2141f63492b9a1171a72354c8e8b213b4",
+      "sourceSha256": "33eebf29345fc400f86c6975366ab5a2141f63492b9a1171a72354c8e8b213b4"
     },
     {
       "path": "server/league/Contracts.cs",
-      "sha256": "0a1d36678f58ea4cbc2da8d29bce167754044e2ec13b9eb854739935bf2e2f5f"
+      "sha256": "0a1d36678f58ea4cbc2da8d29bce167754044e2ec13b9eb854739935bf2e2f5f",
+      "sourceSha256": "0a1d36678f58ea4cbc2da8d29bce167754044e2ec13b9eb854739935bf2e2f5f"
     },
     {
       "path": "server/league/LeagueDatabase.cs",
-      "sha256": "f90d5ff66c6565a8db7c2ab5a6f8ea9dcea325505e138b520316a82df3fa2b0e"
+      "sha256": "f90d5ff66c6565a8db7c2ab5a6f8ea9dcea325505e138b520316a82df3fa2b0e",
+      "sourceSha256": "f90d5ff66c6565a8db7c2ab5a6f8ea9dcea325505e138b520316a82df3fa2b0e"
     },
     {
       "path": "server/league/LeagueOptions.cs",
-      "sha256": "6a5c067cedabde48dd36cd1358c8b6757e6ebeab16f25e2544c68945168d163f"
+      "sha256": "6a5c067cedabde48dd36cd1358c8b6757e6ebeab16f25e2544c68945168d163f",
+      "sourceSha256": "6a5c067cedabde48dd36cd1358c8b6757e6ebeab16f25e2544c68945168d163f"
     },
     {
       "path": "server/league/LeagueRepository.cs",
-      "sha256": "ab190163d6ea8ab41287b13eb8d5da639da9749eeb371dfea30dac0c9d6421af"
+      "sha256": "ab190163d6ea8ab41287b13eb8d5da639da9749eeb371dfea30dac0c9d6421af",
+      "sourceSha256": "ab190163d6ea8ab41287b13eb8d5da639da9749eeb371dfea30dac0c9d6421af"
     },
     {
       "path": "server/league/Program.cs",
-      "sha256": "c5c1fa204388f8d434217f0b7aa054c32a09dcd82d4c74c0a9163a917c7b659c"
+      "sha256": "c5c1fa204388f8d434217f0b7aa054c32a09dcd82d4c74c0a9163a917c7b659c",
+      "sourceSha256": "c5c1fa204388f8d434217f0b7aa054c32a09dcd82d4c74c0a9163a917c7b659c"
     },
     {
       "path": "server/league/RecordEndpoint.cs",
-      "sha256": "a1fe7db7871f13a440320102b62eaf77c3e2f8a422bab038760bbb0096a96834"
+      "sha256": "a1fe7db7871f13a440320102b62eaf77c3e2f8a422bab038760bbb0096a96834",
+      "sourceSha256": "a1fe7db7871f13a440320102b62eaf77c3e2f8a422bab038760bbb0096a96834"
     },
     {
       "path": "server/league/ReplayValidator.cs",
-      "sha256": "7c2ec3205e4dfd0e8db80ad60e05033af8e8c8a8059ac771b6f9b14e0e0ea8d4"
+      "sha256": "7c2ec3205e4dfd0e8db80ad60e05033af8e8c8a8059ac771b6f9b14e0e0ea8d4",
+      "sourceSha256": "7c2ec3205e4dfd0e8db80ad60e05033af8e8c8a8059ac771b6f9b14e0e0ea8d4"
     },
     {
       "path": "server/league/UgsAuthentication.cs",
-      "sha256": "5cb782f88bbd0809d17f2f069fb29fe9368177bc5304ab741684a23bbaac80bc"
+      "sha256": "5cb782f88bbd0809d17f2f069fb29fe9368177bc5304ab741684a23bbaac80bc",
+      "sourceSha256": "5cb782f88bbd0809d17f2f069fb29fe9368177bc5304ab741684a23bbaac80bc"
     },
     {
       "path": "server/league/Shorepop.League.csproj",
-      "sha256": "44e08b69a25f548d3752b356eefc8ade1356c672f839a548553aeb2c9c060cff"
+      "sha256": "44e08b69a25f548d3752b356eefc8ade1356c672f839a548553aeb2c9c060cff",
+      "sourceSha256": "44e08b69a25f548d3752b356eefc8ade1356c672f839a548553aeb2c9c060cff"
     },
     {
       "path": "server/league/packages.lock.json",
-      "sha256": "5b76c9a04ea1f04f79c3ae1a15c87e13fe691dcc807437da22fd0003dd170034"
+      "sha256": "a99b7282c78a1597205399a89ecbd1e1a9572d2ab5e9826ddad16c27cd41d3cf",
+      "sourceSha256": "5b76c9a04ea1f04f79c3ae1a15c87e13fe691dcc807437da22fd0003dd170034"
     },
     {
       "path": "server/league/appsettings.json",
-      "sha256": "6ee1c8f5d7e1b65530d1301d69c467173f81f47af351898d688a894504f6b4c7"
+      "sha256": "6ee1c8f5d7e1b65530d1301d69c467173f81f47af351898d688a894504f6b4c7",
+      "sourceSha256": "6ee1c8f5d7e1b65530d1301d69c467173f81f47af351898d688a894504f6b4c7"
     },
     {
       "path": "server/league/Dockerfile",
-      "sha256": "8133ca9ebfa58932129583696b612582d927528c8d417bca5d030c418566f911"
+      "sha256": "8133ca9ebfa58932129583696b612582d927528c8d417bca5d030c418566f911",
+      "sourceSha256": "8133ca9ebfa58932129583696b612582d927528c8d417bca5d030c418566f911"
     },
     {
       "path": "server/league/DEPLOYMENT.md",
-      "sha256": "127f2d98a5fb0859906f44c8e8900f6c26b15ee027b4085d8b84902fdfc6ddfd"
+      "sha256": "127f2d98a5fb0859906f44c8e8900f6c26b15ee027b4085d8b84902fdfc6ddfd",
+      "sourceSha256": "127f2d98a5fb0859906f44c8e8900f6c26b15ee027b4085d8b84902fdfc6ddfd"
     },
     {
       "path": "server/league/README.md",
-      "sha256": "a11a23d5b3d1571ea33a035625830958ebbd2e5e8969140375f729cc7bdf334d"
+      "sha256": "dc6219faa1e727280715a273c9f50073bf65dbb67bb3a57ec98ffa1037c112e8",
+      "sourceSha256": "a11a23d5b3d1571ea33a035625830958ebbd2e5e8969140375f729cc7bdf334d"
     },
     {
       "path": "server/league/.gitignore",
-      "sha256": "66a1976112273a8187c906fef5c84a009fb19ebedf9a22e72ad91379d68ff02c"
+      "sha256": "66a1976112273a8187c906fef5c84a009fb19ebedf9a22e72ad91379d68ff02c",
+      "sourceSha256": "66a1976112273a8187c906fef5c84a009fb19ebedf9a22e72ad91379d68ff02c"
     },
     {
       "path": "tests/league-server/AuthCacheChecks.cs",
-      "sha256": "9cea47caae75a2070dac8f14be3c05fc7f1e947ba2b9ddd1d058662de2260137"
+      "sha256": "9cea47caae75a2070dac8f14be3c05fc7f1e947ba2b9ddd1d058662de2260137",
+      "sourceSha256": "9cea47caae75a2070dac8f14be3c05fc7f1e947ba2b9ddd1d058662de2260137"
     },
     {
       "path": "tests/league-server/PostgresChecks.cs",
-      "sha256": "f28dd9df7e384956ffb0243a6a52f0dceb8968c89f4a108da53ad240541b31ea"
+      "sha256": "f28dd9df7e384956ffb0243a6a52f0dceb8968c89f4a108da53ad240541b31ea",
+      "sourceSha256": "f28dd9df7e384956ffb0243a6a52f0dceb8968c89f4a108da53ad240541b31ea"
     },
     {
       "path": "tests/league-server/Program.cs",
-      "sha256": "abc07c30afec936d2a120f0b564c8e7cfde52fda9e9f0b58b47ae613bd681ef0"
+      "sha256": "abc07c30afec936d2a120f0b564c8e7cfde52fda9e9f0b58b47ae613bd681ef0",
+      "sourceSha256": "abc07c30afec936d2a120f0b564c8e7cfde52fda9e9f0b58b47ae613bd681ef0"
     },
     {
       "path": "tests/league-server/RecordHttpChecks.cs",
-      "sha256": "d4a48bc3b8c66dd85d06bc86b02604b08efdc44396d60fa260bc6404a0fd4f91"
+      "sha256": "d4a48bc3b8c66dd85d06bc86b02604b08efdc44396d60fa260bc6404a0fd4f91",
+      "sourceSha256": "d4a48bc3b8c66dd85d06bc86b02604b08efdc44396d60fa260bc6404a0fd4f91"
     },
     {
       "path": "tests/league-server/LeagueServerChecks.csproj",
-      "sha256": "26c3aef90af906e59312889f502ad7e883237b718e732bd55d596ec78f107a5d"
+      "sha256": "26c3aef90af906e59312889f502ad7e883237b718e732bd55d596ec78f107a5d",
+      "sourceSha256": "26c3aef90af906e59312889f502ad7e883237b718e732bd55d596ec78f107a5d"
     },
     {
       "path": "tests/league-server/packages.lock.json",
-      "sha256": "a1bdad0608b40b5fed1962fec6643273cfc07e2363bb5f98eae2278eb1c7a45b"
+      "sha256": "acb4725d57d9d82b9583f46ed6dabcfd331a731fbc1a4e30c29446053d35fe2b",
+      "sourceSha256": "a1bdad0608b40b5fed1962fec6643273cfc07e2363bb5f98eae2278eb1c7a45b"
     },
     {
       "path": "tests/league-server/.gitignore",
-      "sha256": "5e8b2ee134798125018c237b8eb0912131ea22aac469323e0e1d00afc197742a"
+      "sha256": "5e8b2ee134798125018c237b8eb0912131ea22aac469323e0e1d00afc197742a",
+      "sourceSha256": "5e8b2ee134798125018c237b8eb0912131ea22aac469323e0e1d00afc197742a"
     },
     {
       "path": "tests/shared/ScoreRoutes.cs",
-      "sha256": "c125e450100ba91791fa387d02b22de22617d97a8cbecb587f98747249c38bb6"
+      "sha256": "c125e450100ba91791fa387d02b22de22617d97a8cbecb587f98747249c38bb6",
+      "sourceSha256": "c125e450100ba91791fa387d02b22de22617d97a8cbecb587f98747249c38bb6"
     }
   ]
 }
