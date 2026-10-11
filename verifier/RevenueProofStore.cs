@@ -210,6 +210,10 @@ public sealed class RevenueProofStore
     public AccountDeletionRequestResult RequestAccountDeletion(string playerId, string store, string applicationId,
         string? analyticsInstallId, DateTimeOffset now, string? firebaseAppInstanceId = null)
     {
+        // Unity JsonUtility writes absent string fields as "". Both optional identifiers must
+        // treat that wire representation as absence, while rejecting nonempty malformed values.
+        if (analyticsInstallId == "") analyticsInstallId = null;
+        if (firebaseAppInstanceId == "") firebaseAppInstanceId = null;
         if (!VerifierOptions.ValidPlayer(playerId) || !ShorepopCatalog.MatchesApplication(store, applicationId))
             throw new VerifierRefusal(422, "privacy_deletion_request_invalid");
         Guid? analyticsId = null;

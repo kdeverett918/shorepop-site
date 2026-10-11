@@ -311,13 +311,14 @@ internal static class RevenueProofTests
             test("privacy postgres: optional analytics identity and invalid request metadata are handled without partial writes", () =>
             {
                 string player = ErasurePlayer("privacyEmpty");
-                foreach (string invalid in new[] { "", "not-a-guid", Guid.NewGuid().ToString("N") })
+                foreach (string invalid in new[] { " ", "not-a-guid", Guid.NewGuid().ToString("N") })
                 {
                     try { proofs.RequestAccountDeletion(player, Store, App, invalid, Now); }
                     catch (VerifierRefusal error) { Expect(error.Status == 422 && error.Code == "privacy_deletion_request_invalid", "invalid GUID refusal"); continue; }
                     throw new Exception("invalid analytics GUID accepted");
                 }
-                var result = proofs.RequestAccountDeletion(player, Store, App, null, Now);
+                // Unity JsonUtility emits missing string fields as empty strings, not JSON null.
+                var result = proofs.RequestAccountDeletion(player, Store, App, "", Now, "");
                 Expect(!result.AlreadyRequested && !result.AlreadySuppressed && result.ClearedProofCount == 0, "invalid request left partial state");
                 var again = proofs.RequestAccountDeletion(player, Store, App, null, Now.AddDays(1));
                 Expect(again.AlreadyRequested && again.RequestId == result.RequestId, "null metadata request not idempotent");
@@ -330,7 +331,7 @@ internal static class RevenueProofTests
             test("privacy postgres: Firebase identifier is normalized, bounded and immutable on repeat", () =>
             {
                 string player = ErasurePlayer("firebase");
-                foreach (string invalid in new[] { "", new string('a', 31), new string('b', 65), new string('x', 32), "Ｆ" + new string('a', 31) })
+                foreach (string invalid in new[] { " ", new string('a', 31), new string('b', 65), new string('x', 32), "Ｆ" + new string('a', 31) })
                 {
                     try { proofs.RequestAccountDeletion(player, Store, App, null, Now, invalid); }
                     catch (VerifierRefusal error) { Expect(error.Status == 422 && error.Code == "privacy_deletion_request_invalid", "invalid Firebase ID refusal"); continue; }
