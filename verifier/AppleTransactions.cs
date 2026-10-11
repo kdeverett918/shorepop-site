@@ -45,9 +45,19 @@ public sealed class AppleTransactionChecker(AppleJwsVerifier verifier, string bu
         }
         bool refunded = Millis(payload, "revocationDate") > 0;
         string original = Text(payload, "originalTransactionId");
+        string currency = Text(payload, "currency");
+        long purchasedAt = Millis(payload, "purchaseDate");
+        // Apple signs milliunits, not whole units. Missing economics must not reject an otherwise
+        // valid grant; a later server refresh can enrich older signed transactions.
+        long grossMicros = 0;
+        bool revenueVerified = RevenueValues.IsCurrency(currency) && purchasedAt > 0 &&
+            payload.TryGetProperty("price", out var price) && price.ValueKind == JsonValueKind.Number &&
+            price.TryGetInt64(out long milliunits) && milliunits >= 0 && milliunits <= long.MaxValue / 1000;
+        if (revenueVerified) grossMicros = payload.GetProperty("price").GetInt64() * 1000;
         return new StoreVerdict(ShorepopCatalog.AppleStore, bundleId, productId, transactionId, environment, refunded, expiry,
             original.Length == 0 ? null : original, jws, Millis(payload, "signedDate"), ShorepopCatalog.AppleKind(type, productId),
-            AppAccountToken(payload));
+            AppAccountToken(payload), revenueVerified, grossMicros, revenueVerified ? currency : "",
+            transactionId, purchasedAt);
     }
 
     /// <summary>

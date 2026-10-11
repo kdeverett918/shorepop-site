@@ -6,7 +6,8 @@ namespace Shorepop.Verifier;
 
 public sealed class PurchaseService(
     AppleJwsVerifier appleVerifier, AppleTransactionChecker apple, IAppleServerApi appleApi, IGooglePlayApi google,
-    IPurchaseStore store, string bundleId, ILogger<PurchaseService> log, Func<DateTimeOffset>? clock = null)
+    IPurchaseStore store, string googlePackageId, ILogger<PurchaseService> log, Func<DateTimeOffset>? clock = null,
+    string appleBundleId = ShorepopCatalog.AppleBundleId)
 {
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
@@ -52,7 +53,7 @@ public sealed class PurchaseService(
             log.LogWarning("validate transferred unacked consumable {Store} {Product} tx={Tx} reason={Reason} from={From} to={To}",
                 storeName, productId, Digest(transactionId), result.Decision.Reason,
                 string.Join(",", result.PreviousClaimants.Select(Digest)), Digest(playerId));
-        var stored = store.List(playerId, storeName, bundleId).First(r => r.TransactionId == transactionId);
+        var stored = store.List(playerId, storeName, ApplicationIdFor(storeName)).First(r => r.TransactionId == transactionId);
         log.LogInformation("validate ok {Store} {Product} kind={Kind} env={Environment} refunded={Refunded} tx={Tx}",
             storeName, productId, verdict.Kind, stored.Environment, stored.Refunded, Digest(transactionId));
         return Result(stored);
@@ -103,10 +104,11 @@ public sealed class PurchaseService(
     {
         if (request == null) throw new VerifierRefusal(400, "body_required");
         string storeName = string.IsNullOrEmpty(request.Store) ? ShorepopCatalog.AppleStore : request.Store;
-        RequireStore(storeName, string.IsNullOrEmpty(request.ApplicationId) ? bundleId : request.ApplicationId);
+        string applicationId = ApplicationIdFor(storeName);
+        RequireStore(storeName, string.IsNullOrEmpty(request.ApplicationId) ? applicationId : request.ApplicationId);
         string transactionId = request.TransactionId ?? "";
         if (string.IsNullOrWhiteSpace(transactionId) || transactionId.Length > 8192) throw new VerifierRefusal(422, "transaction_missing");
-        switch (store.Ack(storeName, bundleId, transactionId, playerId, now()))
+        switch (store.Ack(storeName, applicationId, transactionId, playerId, now()))
         {
             case AckOutcome.NotFound: throw new VerifierRefusal(404, "transaction_not_found");
             case AckOutcome.NotClaimant:
@@ -121,13 +123,26 @@ public sealed class PurchaseService(
     {
         if (request == null) throw new VerifierRefusal(400, "body_required");
         string storeName = RequireStore(request.Store, request.ApplicationId);
-        var rows = store.List(playerId, storeName, bundleId);
+        string applicationId = ApplicationIdFor(storeName);
+        var rows = store.List(playerId, storeName, applicationId);
         if (storeName == ShorepopCatalog.AppleStore) await RefreshApple(playerId, rows, cancel);
         else await RefreshGoogle(playerId, rows, cancel);
-        var results = store.List(playerId, storeName, bundleId).Select(Result).ToList();
+        var results = store.List(playerId, storeName, applicationId).Select(Result).ToList();
         log.LogInformation("reconcile ok {Store} rows={Count} serverApi={ServerApi}", storeName, results.Count,
             storeName == ShorepopCatalog.AppleStore ? appleApi.Configured : google.Configured);
         return results;
+    }
+
+    /// <summary>Refresh one already-owned purchase for delayed revenue enrichment without replaying the whole ledger.</summary>
+    public async Task<ValidatedNativePurchase> RefreshOwnedRevenueAsync(string playerId, string storeName,
+        string applicationId, string transactionId, CancellationToken cancel)
+    {
+        RequireStore(storeName, applicationId);
+        var row = store.List(playerId, storeName, applicationId).FirstOrDefault(r => r.TransactionId == transactionId);
+        if (row == null) throw new VerifierRefusal(404, "transaction_not_found");
+        if (storeName == ShorepopCatalog.AppleStore) await RefreshApple(playerId, [row], cancel);
+        else await RefreshGoogle(playerId, [row], cancel);
+        return Result(store.List(playerId, storeName, applicationId).First(r => r.TransactionId == transactionId));
     }
 
     private async Task RefreshApple(string playerId, IReadOnlyList<PurchaseRecord> rows, CancellationToken cancel)
@@ -144,6 +159,7 @@ public sealed class PurchaseService(
                     var payload = appleVerifier.VerifyAndDecode(row.SignedPayload, DateTimeOffset.FromUnixTimeMilliseconds(Math.Max(1, row.SignedDateUnixMs)));
                     var verdict = apple.Interpret(payload, row.SignedPayload);
                     if (verdict.TransactionId != row.TransactionId) throw new AppleVerificationException("mismatch");
+                    Ingest(playerId, verdict, row.TransactionId);
                 }
                 catch (Exception error) when (error is AppleVerificationException or VerifierRefusal)
                 {
@@ -207,24 +223,58 @@ public sealed class PurchaseService(
     {
         if (!google.Configured) throw new VerifierRefusal(503, "google_validation_not_configured");
         bool subscription = ShorepopCatalog.IsSubscription(productId);
+        long observedAt = now().ToUnixTimeMilliseconds();
         JsonElement? body = subscription
-            ? await google.GetSubscriptionPurchaseAsync(bundleId, token, cancel)
-            : await google.GetProductPurchaseAsync(bundleId, token, cancel);
+            ? await google.GetSubscriptionPurchaseAsync(googlePackageId, token, cancel)
+            : await google.GetProductPurchaseAsync(googlePackageId, token, cancel);
         if (body == null) throw new VerifierRefusal(422, "purchase_not_found");
-        return subscription
-            ? GooglePlayInterpreter.Subscription(body.Value, bundleId, productId, token)
-            : GooglePlayInterpreter.Product(body.Value, bundleId, productId, token);
+        var verdict = subscription
+            ? GooglePlayInterpreter.Subscription(body.Value, googlePackageId, productId, token)
+            : GooglePlayInterpreter.Product(body.Value, googlePackageId, productId, token);
+        // Internal snapshot ordering only; the authenticated response's actual settlement time is
+        // reported separately, and is left unknown when the store has not supplied it.
+        verdict = verdict with { SignedDateUnixMs = observedAt };
+        string orderId = GooglePlayInterpreter.RevenueOrderId(body.Value, productId, subscription);
+        if (orderId.Length == 0 || orderId.Length > 256 || orderId == token) return verdict;
+        verdict = verdict with
+        {
+            RevenueTransactionId = orderId,
+            RevenuePurchasedAtUnixMs = GooglePlayInterpreter.RevenuePurchaseTime(body.Value, subscription),
+        };
+        try
+        {
+            // This optional lookup must not consume the entire purchase-validation request window.
+            using var economicsCancel = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+            economicsCancel.CancelAfter(TimeSpan.FromSeconds(2));
+            var order = await google.GetOrderAsync(googlePackageId, orderId, economicsCancel.Token);
+            if (order != null) verdict = GooglePlayInterpreter.WithOrderRevenue(verdict, order.Value, orderId, token, body.Value);
+        }
+        catch (Exception error) when (error is VerifierRefusal or HttpRequestException or JsonException ||
+            (error is OperationCanceledException && !cancel.IsCancellationRequested))
+        {
+            // Order economics are enrichment; a permission failure, timeout or transient order API
+            // outage must not prevent a separately verified purchase from granting. Reconcile retries.
+            log.LogWarning("google order economics unavailable; purchase remains verified tx={Tx}", Digest(token));
+        }
+        return verdict;
     }
 
     private string RequireStore(string? storeName, string? applicationId)
     {
-        if (storeName != ShorepopCatalog.AppleStore && storeName != ShorepopCatalog.GoogleStore) throw new VerifierRefusal(422, "unknown_store");
-        if (applicationId != bundleId) throw new VerifierRefusal(422, "application_mismatch");
-        return storeName;
+        if (applicationId != ApplicationIdFor(storeName)) throw new VerifierRefusal(422, "application_mismatch");
+        return storeName!;
     }
 
+    private string ApplicationIdFor(string? storeName) => storeName switch
+    {
+        ShorepopCatalog.AppleStore => appleBundleId,
+        ShorepopCatalog.GoogleStore => googlePackageId,
+        _ => throw new VerifierRefusal(422, "unknown_store"),
+    };
+
     private static PurchaseRecord Record(string playerId, StoreVerdict v) => new(v.Store, v.ApplicationId, v.TransactionId, playerId, v.ProductId,
-        v.Environment, v.Refunded, v.PurchasedPeriodExpiryUtcTicks, v.OriginalTransactionId, v.SignedPayload, v.SignedDateUnixMs);
+        v.Environment, v.Refunded, v.PurchasedPeriodExpiryUtcTicks, v.OriginalTransactionId, v.SignedPayload, v.SignedDateUnixMs,
+        v.RevenueVerified, v.GrossRevenueMicros, v.RevenueCurrency, v.RevenueTransactionId, v.RevenuePurchasedAtUnixMs, v.RevenueRefunded);
 
     private ValidatedNativePurchase Result(PurchaseRecord row)
     {
@@ -232,6 +282,10 @@ public sealed class PurchaseService(
         {
             Store = row.Store, ApplicationId = row.ApplicationId, ProductId = row.ProductId, TransactionId = row.TransactionId,
             Refunded = row.Refunded, Environment = row.Environment,
+            RevenueVerified = row.RevenueVerified, GrossRevenueMicros = row.GrossRevenueMicros,
+            RevenueCurrency = row.RevenueCurrency, RevenueTransactionId = row.RevenueTransactionId,
+            RevenuePurchasedAtUnixMs = row.RevenuePurchasedAtUnixMs,
+            RevenueRefunded = row.RevenueRefunded,
         };
         if (ShorepopCatalog.IsSubscription(row.ProductId))
         {

@@ -6,6 +6,8 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using Shorepop.Verifier;
 
+if (args.Length > 0 && args[0] == "--postgres-worker") return PostgresStoreTests.RunWorker(args);
+
 // Console suite for the purchase verifier. Exit 0 = every case passed. Every "must fail" case is
 // a known-bad input fired at the real verifier (tampered payload, wrong root, wrong bundle, bad OIDs).
 int passed = 0, failed = 0;
@@ -187,7 +189,7 @@ Case("local chain: alg none/HS256 header REJECTED", () =>
 
 // ---- Service: player binding, subscription revisions, reconcile, Google fail-closed ----
 PurchaseService Service(IPurchaseStore store, IGooglePlayApi? google = null, IAppleServerApi? appleApi = null, Func<DateTimeOffset>? clock = null) =>
-    new(localVerifier, checker, appleApi ?? new FakeApple(), google ?? new FakeGoogle(false), store, ShorepopCatalog.BundleId, NullLogger<PurchaseService>.Instance, clock);
+    new(localVerifier, checker, appleApi ?? new FakeApple(), google ?? new FakeGoogle(false), store, ShorepopCatalog.BundleId, NullLogger<PurchaseService>.Instance, clock, appleBundleId: ShorepopCatalog.BundleId);
 NativePurchaseProof AppleProof(string product, string id, string jws) => new()
     { Store = ShorepopCatalog.AppleStore, ApplicationId = ShorepopCatalog.BundleId, ProductId = product, TransactionId = id, Receipt = "", AppleSignedTransaction = jws };
 
@@ -549,6 +551,13 @@ Case("ugs claims: project id, single subject, nbf required", () =>
     Expect(!UgsAuthentication.ValidClaims(P(("sub", "abc/../x"), ("project_id", project), ("nbf", "1")), project), "bad subject");
     Expect(!UgsAuthentication.ValidClaims(P(("sub", "abc123"), ("project_id", project)), project), "missing nbf");
 });
+
+Case("verified purchase revenue: store economics, recovery, migrations", () => RevenueTests.Run(Expect));
+UgsMigrationTests.Run(Case);
+PlatformIdentityTests.Run(Case);
+PostgresStoreTests.Run(Case);
+RevenueProofTests.Run(Case);
+RevenueProofBindingTests.Run(Case);
 
 try { File.Delete(dbPath); File.Delete(dbPath + "-wal"); File.Delete(dbPath + "-shm"); } catch (IOException) { }
 Console.WriteLine($"RESULT passed={passed} failed={failed}");

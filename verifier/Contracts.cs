@@ -27,7 +27,7 @@ public sealed class AckRequest
     public string? TransactionId { get; set; }
     /// <summary>Optional; default <c>AppleAppStore</c>.</summary>
     public string? Store { get; set; }
-    /// <summary>Optional; default the bundle id. When present it must equal it.</summary>
+    /// <summary>Optional; defaults to the configured identity for the requested store. When present it must equal it.</summary>
     public string? ApplicationId { get; set; }
 }
 
@@ -48,6 +48,15 @@ public sealed class ValidatedNativePurchase
     public long SubscriptionEntitlementRevision { get; set; }
     public long CurrentSubscriptionExpiryUtcTicks { get; set; }
     public string Environment { get; set; } = "";
+    /// <summary>True only when the store supplied authoritative transaction economics, never a catalog estimate.</summary>
+    public bool RevenueVerified { get; set; }
+    public long GrossRevenueMicros { get; set; }
+    public string RevenueCurrency { get; set; } = "";
+    /// <summary>Apple transaction id or Google order id. Never a Google purchase token.</summary>
+    public string RevenueTransactionId { get; set; } = "";
+    public long RevenuePurchasedAtUnixMs { get; set; }
+    /// <summary>The economic order was fully refunded; this does not imply entitlement revocation.</summary>
+    public bool RevenueRefunded { get; set; }
 }
 
 public sealed class ReconcileRequest
@@ -64,12 +73,24 @@ public sealed class VerifierRefusal(int status, string code) : Exception(code)
     public string Code { get; } = code;
 }
 
-/// <summary>What a store check proved about one transaction (before player binding).</summary>
+/// <summary>
+/// What a store check proved before player binding. SignedDateUnixMs is Apple's signed date or,
+/// for Google's authenticated API, the server's request-start observation time. It is never an analytics purchase timestamp.
+/// </summary>
 public sealed record StoreVerdict(
     string Store, string ApplicationId, string ProductId, string TransactionId,
     string Environment, bool Refunded, long PurchasedPeriodExpiryUtcTicks,
     string? OriginalTransactionId, string? SignedPayload, long SignedDateUnixMs, ProductKind Kind,
-    string? AppAccountToken = null);
+    string? AppAccountToken = null,
+    bool RevenueVerified = false, long GrossRevenueMicros = 0, string RevenueCurrency = "",
+    string RevenueTransactionId = "", long RevenuePurchasedAtUnixMs = 0, bool RevenueRefunded = false);
+
+internal static class RevenueValues
+{
+    // Currency comes only from a signed Apple transaction or authenticated Google order. Enforce
+    // the ISO 4217 alpha-3 wire format without relying on host culture data (the service is invariant).
+    public static bool IsCurrency(string value) => value.Length == 3 && value.All(c => c is >= 'A' and <= 'Z');
+}
 
 /// <summary>
 /// How a product binds to players. A consumable grants currency once, so its transaction belongs to the
@@ -80,9 +101,18 @@ public enum ProductKind { Consumable, NonConsumable, Subscription }
 
 public static class ShorepopCatalog
 {
-    public const string BundleId = "com.shorepop.game";
+    public const string GooglePackageId = "com.shorepop.game";
+    public const string AppleBundleId = "com.dizzywalk.shorepop";
+    // Historical test fixtures and the Android package retain this name.
+    public const string BundleId = GooglePackageId;
     public const string AppleStore = "AppleAppStore";
     public const string GoogleStore = "GooglePlay";
+    public static bool MatchesApplication(string? store, string? applicationId) => store switch
+    {
+        AppleStore => applicationId == AppleBundleId,
+        GoogleStore => applicationId == GooglePackageId,
+        _ => false,
+    };
     public const string SubscriptionProductId = "gg.shorepop.pass.monthly";
 
     // Mirrors IapCatalog.All in UnityIapProvider.cs (14 rows, 2026-09-26).

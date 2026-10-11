@@ -6,6 +6,15 @@ contract in `Assets/Scripts/Services/Commerce/NativePurchaseValidation.cs`. The 
 UGS access token and reads the responses below. It is deployed on Render as `shorepop-verifier`
 (`https://shorepop-verifier.onrender.com`, from the `shorepop-site` repo, `verifier/`).
 
+**2026-10-10 account correction:** the candidate targets Michael's Apple app
+`com.dizzywalk.shorepop` and Unity project `aea5f7f0-ebcb-4745-98c5-378bb2ad2feb`.
+Android retains `com.shorepop.game`. PostgreSQL and Play configuration are prepared.
+Michael's In-App Purchase key remains pending; previous Apple key/probe evidence
+belongs to the former account. The new verifier will use a separate free Render
+service and dedicated repository branch. The former SQLite service remains intact.
+See `DEPLOY.md` for exact source/live identities. Configuration does not establish
+provider authentication or an actual purchase settlement.
+
 ## Who a transaction belongs to
 
 | Product type | Products | Rule |
@@ -75,15 +84,22 @@ carry no type, so Google uses the catalog.
 
 Every `/v1` route requires `Authorization: Bearer <UGS player access token>`. The token is validated
 exactly like the league server validates it: Unity JWKS, issuer `https://player-auth.services.api.unity.com`,
-RS256, lifetime, one `sub`, and `project_id == UGS_PROJECT_ID`. The `sub` claim is the player. JSON input
+RS256, lifetime, one `sub`, and one exact `project_id` from `UGS_PROJECT_ID` or the optional
+comma-separated `UGS_ADDITIONAL_PROJECT_IDS` allowlist. Wildcards, empty entries and invalid UUIDs
+are refused. Additional IDs support a bounded project migration; they do not link player identities
+between projects or transfer purchase ownership. The `sub` claim remains the player; because it is
+not project-prefixed in the ledger, do not accept two projects unless their subject namespace
+and intended ownership continuity have been independently established. The new Michael service
+accepts only Michael's project, with no additional project IDs. JSON input
 is case-insensitive. Output uses the client's PascalCase field names so Unity's `JsonUtility` can read it.
 
 | Route | Body | 200 response |
 |---|---|---|
 | `POST /v1/purchases/validate` | `NativePurchaseProof` | one `ValidatedNativePurchase` |
-| `POST /v1/purchases/ack` | `{"TransactionId":"..."}` (optional `Store`, default `AppleAppStore`; optional `ApplicationId`, must be `com.shorepop.game`) | `{"TransactionId":"...","Acked":true}`; idempotent, first ack time kept |
-| `POST /v1/purchases/reconcile` | `{"Store":"AppleAppStore"\|"GooglePlay","ApplicationId":"com.shorepop.game"}` | `ValidatedNativePurchase[]`, all of this player's known transactions (an empty array is an authoritative "none") |
-| `GET /healthz` | none | `{status, apple, appleServerApi, google, store}` |
+| `POST /v1/purchases/ack` | `{"TransactionId":"..."}` (optional `Store`, default `AppleAppStore`; optional `ApplicationId`, must match that store: Apple `com.dizzywalk.shorepop`, Google `com.shorepop.game`) | `{"TransactionId":"...","Acked":true}`; idempotent, first ack time kept |
+| `POST /v1/purchases/reconcile` | `{Store,ApplicationId}` using Apple `com.dizzywalk.shorepop` or Google `com.shorepop.game` | `ValidatedNativePurchase[]`, all of this player's known transactions (an empty array is an authoritative "none") |
+| `POST /v1/purchases/revenue-proof` | `{Store,ApplicationId,ProductId,LedgerTransactionKey}` | Authenticated original claimant's unexpired attribution proof plus verified economic metadata; never a purchase grant or downstream tracking receipt. |
+| `GET /healthz` | none | `{status, apple, appleServerApi, google, store, build, revenueProofRecovery}` |
 
 Errors are returned as `{"Code":"..."}`:
 
@@ -98,6 +114,47 @@ Errors are returned as `{"Code":"..."}`:
 | 503 | `verifier_unconfigured`, `google_validation_not_configured`, `authentication_keys_unavailable`, `apple_server_api_unavailable`, `apple_server_response_unverifiable`, `storage_unavailable`, `stored_transaction_unverifiable` |
 
 ## What each store check proves
+
+### Verified economic metadata
+
+`ValidatedNativePurchase` additionally returns `RevenueVerified`, `GrossRevenueMicros`,
+`RevenueCurrency`, `RevenueTransactionId`, `RevenuePurchasedAtUnixMs` and `RevenueRefunded`.
+Apple values come from the signature-verified JWS (`price` milliunits multiplied by
+1000). Google gross paid totals come from `orders.get`, bound to the verified order,
+purchase token and product; net developer proceeds are not used. Missing or temporarily
+unavailable economic data never substitutes a current catalog price and does not prevent
+a valid grant. Later reconciliation can fill it. Revenue identity is the Apple transaction
+or Play order ID, never a Google purchase token.
+
+Google allows a full monetary refund without revoking the entitlement. `RevenueRefunded`
+therefore suppresses positive tracking for that economic order independently of `Refunded`,
+which remains the store entitlement state. A later paid subscription renewal has its own
+economic identity. Unknown prices, sandbox purchases and refund metadata must never be
+reported as positive production revenue.
+
+### Attribution proof recovery
+
+The recovery endpoint exists only with Postgres plus `VERIFIER_REVENUE_PROOF_KEY` configured.
+It returns `{Store,ProductId,LedgerTransactionKey,Receipt,Signature}` and the economic fields
+above. The ledger key is `tx-` plus lowercase SHA-256 of UTF-8 `store + "\n" + app + "\n" +
+nativeTransaction`. The requesting authenticated player must still be the current first
+claimant, match product/app/store, and own the original proof record. Other entitlement
+claimants receive no proof. Fully refunded economic orders return their refund metadata
+with empty proof, allowing the client to discard an unsent positive tracking event.
+
+Only verified StoreKit 2 JWS or Google purchase JSON with a valid app licensing RSA signature
+is retained. Google package/product/token are bound to the verified purchase before storage.
+The recovery cache encrypts receipt/signature using AES-256-GCM and identity-bound associated
+data. Recovery expires exactly 30 days after first retention of that economic order;
+replay never extends it. A distinct verified subscription renewal order may start its own
+window, replacing the token's prior proof only when the canonical order matches. A
+startup/every-12-hour cleanup clears expired ciphertext and retains only the identity/expiry
+tombstone. Keep the encryption key available across deployments; do not rotate it without
+migrating live envelopes. Existing canonical ledger JWS/token retention used for store
+reconciliation is separate from this encrypted cache.
+
+Clients request recovery only when attribution collection is allowed. The endpoint itself
+does not emit analytics or contact Tenjin. A client SDK handoff is not a provider receipt.
 
 **Apple (StoreKit 2).** The service verifies `AppleSignedTransaction` (a JWS) as follows:
 - The header must say `alg: ES256` and carry exactly three `x5c` certificates.
@@ -122,18 +179,23 @@ OCSP revocation of Apple's signing certificates is **not** checked. Apple's libr
 **Google Play.** Purchases are checked with `purchases.productsv2.getproductpurchasev2` or
 `purchases.subscriptionsv2.get`, authenticated with the service account in `GOOGLE_PLAY_SA_JSON`.
 - If `GOOGLE_PLAY_SA_JSON` is unset, every Google request answers **503
-  `google_validation_not_configured`** (fail closed). Play stays blocked until the app transfer completes.
+  `google_validation_not_configured`** (fail closed). Check current provider access rather than historical transfer notes.
 - One-time products: `PURCHASED` is accepted, `CANCELLED` is returned with `Refunded=true`, and
   `PENDING` answers 409.
 - Subscriptions: `expiryTime` becomes `PurchasedPeriodExpiryUtcTicks`. A revoked subscription appears as
   expired.
 - A `testPurchase` or `testPurchaseContext` sets `Environment = "LicenseTest"`.
 - The server does not acknowledge or consume purchases; the client's `ConfirmPurchase` does that.
-- The Google path has been tested against fake API responses only, never against the live API.
+- The interpreter has test response coverage. The 2026-10-10 live invalid-token probe reached
+  Publisher validation with the configured service account; a real license-test purchase is still separate evidence.
 
 **Subscription fields.** `CurrentSubscriptionExpiryUtcTicks` is the latest expiry among the player's
-unrefunded pass transactions. `SubscriptionEntitlementRevision` starts at 1 and goes up every time that
-aggregate changes. Both come from the store.
+unrefunded pass transactions. `SubscriptionEntitlementRevision` goes up every time that
+aggregate changes. PostgreSQL seeds a new row from the fixed server configuration
+`VERIFIER_SUBSCRIPTION_REVISION_EPOCH` (at least 1); existing rows keep their persisted
+revisions regardless of restart or configuration changes. The staged cutover epoch is
+`1791672606408`, above the legacy SQLite counter range. Preserve it across deployments;
+never lower the baseline for future rows. Both subscription fields come from the store.
 
 ## Reconcile and the App Store Server API
 
@@ -151,12 +213,13 @@ aggregate changes. Both come from the store.
 
 ## Storage
 
-`IPurchaseStore` has two implementations:
+`IPurchaseStore` has three implementations:
 
 | Store | Setting | Notes |
 |---|---|---|
 | SQLite (default) | file at `VERIFIER_DB_PATH`, default `/home/app/data/verifier.db` | See the warning below. |
 | In memory | `VERIFIER_STORE=memory` | Lost on every restart. |
+| PostgreSQL | `VERIFIER_STORE=postgres`, `VERIFIER_DATABASE_URL` | Durable isolated `shorepop_verifier` schema; database transaction locks serialize claim, acknowledgment and subscription updates across processes. |
 
 **Persistence limit on the free plan.** The service runs on Render's free plan, where the container disk
 is ephemeral: the SQLite file is wiped on every deploy and every restart (including idle spin-downs). That
@@ -167,7 +230,12 @@ re-presents the signed transaction.
 
 **Before real revenue, move to one of these:**
 - a paid Render instance with a persistent disk mounted at `/home/app/data` (the default `VERIFIER_DB_PATH`), or
-- a Postgres store (`DATABASE_URL`). `IPurchaseStore` is ready for it, but that store is not implemented yet.
+- the Postgres store (`VERIFIER_DATABASE_URL`). The schema must be provisioned before startup;
+  the scoped login creates its tables and indexes. It never falls back to SQLite on an error.
+
+Postgres tests use `SHOREPOP_TEST_POSTGRES`, pointing to a separate test database.
+The implementation accepts a Postgres URL or Npgsql connection string and defaults
+to required TLS for URLs. Keep credentials out of logs and command arguments.
 
 The database holds raw Apple JWS values and Google purchase tokens, because reconcile needs them to
 re-query the stores. Logs never contain tokens, receipts, JWS values or raw transaction ids: they carry
@@ -178,12 +246,18 @@ only a 12-hex SHA-256 digest. No CORS middleware is registered.
 | Variable | Required | Meaning |
 |---|---|---|
 | `UGS_PROJECT_ID` | yes | UGS project id. `/v1` answers 503 until it is set. |
-| `APP_BUNDLE_ID` | no | Must be `com.shorepop.game`, which is the default. |
+| `UGS_ADDITIONAL_PROJECT_IDS` | no | Up to eight exact additional project UUIDs, comma-separated, during a project migration. Does not map players or ownership. |
+| `GOOGLE_PACKAGE_ID` | no | Must be `com.shorepop.game`, which is the default. `APP_BUNDLE_ID` remains an Android-only legacy fallback. |
+| `APPLE_BUNDLE_ID` | no | Must be `com.dizzywalk.shorepop`, the new Michael-team app. No fallback to the old Apple bundle. |
 | `APPLE_ALLOWED_ENVIRONMENTS` | no | Default `Production,Sandbox`. |
 | `GOOGLE_PLAY_SA_JSON` | no | Service-account key JSON text. Unset means Google answers 503. |
 | `APPLE_IAP_KEY_ID`, `APPLE_IAP_ISSUER_ID`, `APPLE_IAP_PRIVATE_KEY` | no | App Store Server API credentials. |
-| `VERIFIER_STORE` | no | `sqlite` (default) or `memory`. |
+| `VERIFIER_STORE` | no | `sqlite` (default), `memory`, or `postgres`; unknown values fail startup. |
 | `VERIFIER_DB_PATH` | no | SQLite file path. |
+| `VERIFIER_DATABASE_URL` | when postgres | Dedicated PostgreSQL login connection URL/string. Never sent to clients. |
+| `VERIFIER_SUBSCRIPTION_REVISION_EPOCH` | for SQLite cutover | Fixed positive initial PostgreSQL revision baseline; preserve across deployments. Existing rows retain their revisions. |
+| `VERIFIER_REVENUE_PROOF_KEY` | for proof recovery | Base64-encoded 32-byte AES key, stable across deployments. |
+| `GOOGLE_PLAY_LICENSE_KEY` | for Google proof retention | App licensing RSA public key from Play Console, used to verify original purchase signatures. |
 | `PORT` | no | Set by Render. |
 
 ## Build and test

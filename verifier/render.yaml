@@ -2,21 +2,27 @@
 # never committed (sync: false). See DEPLOY.md for the non-secret values.
 services:
   - type: web
-    name: shorepop-verifier
+    name: shorepop-verifier-michael
     runtime: docker
     plan: free
     region: oregon
-    repo: https://github.com/kdeverett918/harbor-sprouts
-    branch: master
-    rootDir: server/verifier
+    repo: https://github.com/kdeverett918/shorepop-site
+    branch: codex/shorepop-michael-verifier
+    rootDir: verifier
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /healthz
-    autoDeploy: false
+    autoDeployTrigger: off
     envVars:
       - key: UGS_PROJECT_ID
         sync: false
+      - key: UGS_ADDITIONAL_PROJECT_IDS
+        sync: false
       - key: APP_BUNDLE_ID
+        sync: false
+      - key: GOOGLE_PACKAGE_ID
+        sync: false
+      - key: APPLE_BUNDLE_ID
         sync: false
       - key: APPLE_ALLOWED_ENVIRONMENTS
         sync: false
@@ -31,4 +37,12 @@ services:
       - key: VERIFIER_STORE
         sync: false
       - key: VERIFIER_DB_PATH
+        sync: false
+      - key: VERIFIER_DATABASE_URL
+        sync: false
+      - key: VERIFIER_REVENUE_PROOF_KEY
+        sync: false
+      - key: GOOGLE_PLAY_LICENSE_KEY
+        sync: false
+      - key: VERIFIER_SUBSCRIPTION_REVISION_EPOCH
         sync: false

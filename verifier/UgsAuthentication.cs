@@ -22,11 +22,14 @@ public static class UgsAuthentication
         NameClaimType = "sub"
     };
     public static bool ValidClaims(ClaimsPrincipal principal, string projectId)
+        => ValidClaims(principal, new VerifierOptions { ProjectId = projectId });
+
+    public static bool ValidClaims(ClaimsPrincipal principal, VerifierOptions settings)
     {
         var subjects = principal.FindAll("sub").ToArray();
         var projects = principal.FindAll("project_id").ToArray();
-        return Guid.TryParse(projectId, out _) && subjects.Length == 1 && projects.Length == 1 &&
-            VerifierOptions.ValidPlayer(subjects[0].Value) && projects[0].Value == projectId &&
+        return subjects.Length == 1 && projects.Length == 1 &&
+            VerifierOptions.ValidPlayer(subjects[0].Value) && settings.AllowsProject(projects[0].Value) &&
             principal.HasClaim(c => c.Type == "nbf");
     }
     public static void Configure(JwtBearerOptions jwt, VerifierOptions settings, UgsJwksCache cache)
@@ -40,7 +43,7 @@ public static class UgsAuthentication
         {
             OnTokenValidated = context =>
             {
-                if (context.Principal == null || !ValidClaims(context.Principal, settings.ProjectId))
+                if (context.Principal == null || !ValidClaims(context.Principal, settings))
                     context.Fail("Invalid UGS subject or project.");
                 return Task.CompletedTask;
             },

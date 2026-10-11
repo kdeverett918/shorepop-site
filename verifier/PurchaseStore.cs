@@ -1,11 +1,15 @@
 using System.Globalization;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
 namespace Shorepop.Verifier;
 
 public sealed record PurchaseRecord(
     string Store, string ApplicationId, string TransactionId, string PlayerId, string ProductId, string Environment,
-    bool Refunded, long PurchasedPeriodExpiryUtcTicks, string? OriginalRef, string? SignedPayload, long SignedDateUnixMs);
+    bool Refunded, long PurchasedPeriodExpiryUtcTicks, string? OriginalRef, string? SignedPayload, long SignedDateUnixMs,
+    bool RevenueVerified = false, long GrossRevenueMicros = 0, string RevenueCurrency = "",
+    string RevenueTransactionId = "", long RevenuePurchasedAtUnixMs = 0, bool RevenueRefunded = false,
+    string RefundedRevenueOrderIdsJson = "[]");
 
 /// <summary>One player's claim on one transaction.</summary>
 public sealed record ClaimInfo(string PlayerId, DateTimeOffset BoundUtc, DateTimeOffset? AckedUtc);
@@ -78,6 +82,21 @@ internal static class StoreRules
     public static PurchaseRecord Merge(PurchaseRecord existing, PurchaseRecord incoming)
     {
         bool newer = incoming.SignedDateUnixMs >= existing.SignedDateUnixMs;
+        // Reconciliation may temporarily lack order economics. Keep previously verified economics,
+        // and never let an older Google renewal overwrite a newer order on the same purchase token.
+        bool incomingRevenueKnown = incoming.RevenueTransactionId.Length > 0;
+        bool existingRevenueKnown = existing.RevenueTransactionId.Length > 0;
+        bool sameRevenueOrder = incomingRevenueKnown && existingRevenueKnown && incoming.RevenueTransactionId == existing.RevenueTransactionId;
+        bool newerEconomicOrder = incomingRevenueKnown && (!existingRevenueKnown ||
+            (incoming.SignedDateUnixMs > 0 || existing.SignedDateUnixMs > 0 ? newer
+                : incoming.RevenuePurchasedAtUnixMs >= existing.RevenuePurchasedAtUnixMs));
+        // A new verified order identity must clear the old order's price even when its own price
+        // lookup is unavailable. Same-order price failures keep the previously verified economics.
+        bool takeRevenueValues = !sameRevenueOrder ? newerEconomicOrder
+            : incoming.RevenueVerified && (!existing.RevenueVerified || incoming.RevenuePurchasedAtUnixMs >= existing.RevenuePurchasedAtUnixMs);
+        var refundedRevenueOrders = RefundHistory(existing);
+        refundedRevenueOrders.UnionWith(RefundHistory(incoming));
+        string selectedRevenueOrder = takeRevenueValues ? incoming.RevenueTransactionId : existing.RevenueTransactionId;
         return existing with
         {
             Refunded = existing.Refunded || incoming.Refunded,
@@ -86,7 +105,21 @@ internal static class StoreRules
             SignedDateUnixMs = Math.Max(existing.SignedDateUnixMs, incoming.SignedDateUnixMs),
             Environment = incoming.Environment,
             OriginalRef = incoming.OriginalRef ?? existing.OriginalRef,
+            RevenueVerified = takeRevenueValues ? incoming.RevenueVerified : existing.RevenueVerified,
+            GrossRevenueMicros = takeRevenueValues ? incoming.GrossRevenueMicros : existing.GrossRevenueMicros,
+            RevenueCurrency = takeRevenueValues ? incoming.RevenueCurrency : existing.RevenueCurrency,
+            RevenueTransactionId = takeRevenueValues ? incoming.RevenueTransactionId : existing.RevenueTransactionId,
+            RevenuePurchasedAtUnixMs = takeRevenueValues ? incoming.RevenuePurchasedAtUnixMs : existing.RevenuePurchasedAtUnixMs,
+            RevenueRefunded = refundedRevenueOrders.Contains(selectedRevenueOrder),
+            RefundedRevenueOrderIdsJson = JsonSerializer.Serialize(refundedRevenueOrders.Order(StringComparer.Ordinal)),
         };
+    }
+
+    private static HashSet<string> RefundHistory(PurchaseRecord row)
+    {
+        var ids = new HashSet<string>(JsonSerializer.Deserialize<string[]>(row.RefundedRevenueOrderIdsJson) ?? [], StringComparer.Ordinal);
+        if (row.RevenueRefunded && row.RevenueTransactionId.Length > 0) ids.Add(row.RevenueTransactionId);
+        return ids;
     }
 
     public static long Aggregate(IEnumerable<PurchaseRecord> rows) => rows
@@ -235,6 +268,24 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
             info.CommandText = "SELECT COUNT(*) FROM pragma_table_info('claims') WHERE name='acked_utc'";
             if (Convert.ToInt64(info.ExecuteScalar()) == 0) Execute(connection, null, "ALTER TABLE claims ADD COLUMN acked_utc TEXT NULL;");
         }
+        // Additive migration preserves every pre-existing purchase and claim.
+        foreach (var (name, definition) in new[]
+        {
+            ("revenue_verified", "INTEGER NOT NULL DEFAULT 0"),
+            ("gross_revenue_micros", "INTEGER NOT NULL DEFAULT 0"),
+            ("revenue_currency", "TEXT NOT NULL DEFAULT ''"),
+            ("revenue_transaction_id", "TEXT NOT NULL DEFAULT ''"),
+            ("revenue_purchased_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ("revenue_refunded", "INTEGER NOT NULL DEFAULT 0"),
+            ("refunded_revenue_order_ids_json", "TEXT NOT NULL DEFAULT '[]'"),
+        })
+        {
+            using var info = connection.CreateCommand();
+            info.CommandText = "SELECT COUNT(*) FROM pragma_table_info('purchases') WHERE name=$name";
+            info.Parameters.AddWithValue("$name", name);
+            if (Convert.ToInt64(info.ExecuteScalar()) == 0)
+                Execute(connection, null, $"ALTER TABLE purchases ADD COLUMN {name} {definition};");
+        }
     }
 
     private SqliteConnection Open()
@@ -285,15 +336,21 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
             string stamp = Stamp(now);
             Execute(connection, tx, """
                 INSERT INTO purchases(store, app_id, transaction_id, player_id, product_id, environment, refunded, expiry_ticks,
-                  original_ref, signed_payload, signed_date_ms, created_utc, updated_utc)
-                VALUES($s,$a,$t,$p,$prod,$env,$ref,$exp,$orig,$payload,$sd,$now,$now)
+                  original_ref, signed_payload, signed_date_ms, created_utc, updated_utc,
+                  revenue_verified, gross_revenue_micros, revenue_currency, revenue_transaction_id, revenue_purchased_at_ms, revenue_refunded, refunded_revenue_order_ids_json)
+                VALUES($s,$a,$t,$p,$prod,$env,$ref,$exp,$orig,$payload,$sd,$now,$now,$rv,$gross,$cur,$rt,$rp,$rr,$rh)
                 ON CONFLICT(store, app_id, transaction_id) DO UPDATE SET environment=$env, refunded=$ref, expiry_ticks=$exp,
-                  original_ref=$orig, signed_payload=$payload, signed_date_ms=$sd, updated_utc=$now
+                  original_ref=$orig, signed_payload=$payload, signed_date_ms=$sd, updated_utc=$now,
+                  revenue_verified=$rv, gross_revenue_micros=$gross, revenue_currency=$cur,
+                  revenue_transaction_id=$rt, revenue_purchased_at_ms=$rp, revenue_refunded=$rr, refunded_revenue_order_ids_json=$rh
                 """,
                 ("$s", row.Store), ("$a", row.ApplicationId), ("$t", row.TransactionId), ("$p", row.PlayerId), ("$prod", row.ProductId),
                 ("$env", row.Environment), ("$ref", row.Refunded ? 1 : 0), ("$exp", row.PurchasedPeriodExpiryUtcTicks),
                 ("$orig", (object?)row.OriginalRef ?? DBNull.Value), ("$payload", (object?)row.SignedPayload ?? DBNull.Value),
-                ("$sd", row.SignedDateUnixMs), ("$now", stamp));
+                ("$sd", row.SignedDateUnixMs), ("$now", stamp), ("$rv", row.RevenueVerified ? 1 : 0),
+                ("$gross", row.GrossRevenueMicros), ("$cur", row.RevenueCurrency),
+                ("$rt", row.RevenueTransactionId), ("$rp", row.RevenuePurchasedAtUnixMs), ("$rr", row.RevenueRefunded ? 1 : 0),
+                ("$rh", row.RefundedRevenueOrderIdsJson));
             if (decision.Action == ClaimAction.Transfer)
             {
                 foreach (var gone in current.Where(c => c.PlayerId != record.PlayerId))
@@ -416,14 +473,16 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
     {
         using var command = connection.CreateCommand();
         command.Transaction = tx;
-        command.CommandText = "SELECT store, app_id, transaction_id, player_id, product_id, environment, refunded, expiry_ticks, original_ref, signed_payload, signed_date_ms FROM purchases " + where;
+        command.CommandText = "SELECT store, app_id, transaction_id, player_id, product_id, environment, refunded, expiry_ticks, original_ref, signed_payload, signed_date_ms, " +
+            "revenue_verified, gross_revenue_micros, revenue_currency, revenue_transaction_id, revenue_purchased_at_ms, revenue_refunded, refunded_revenue_order_ids_json FROM purchases " + where;
         foreach (var (name, value) in args) command.Parameters.AddWithValue(name, value);
         using var reader = command.ExecuteReader();
         var list = new List<PurchaseRecord>();
         while (reader.Read())
             list.Add(new PurchaseRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
                 reader.GetString(5), reader.GetInt64(6) != 0, reader.GetInt64(7), reader.IsDBNull(8) ? null : reader.GetString(8),
-                reader.IsDBNull(9) ? null : reader.GetString(9), reader.GetInt64(10)));
+                reader.IsDBNull(9) ? null : reader.GetString(9), reader.GetInt64(10), reader.GetInt64(11) != 0,
+                reader.GetInt64(12), reader.GetString(13), reader.GetString(14), reader.GetInt64(15), reader.GetInt64(16) != 0, reader.GetString(17)));
         return list;
     }
 
