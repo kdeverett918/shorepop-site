@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-09",
+  "updated": "2026-10-11",
   "interstitial_enabled": true,
   "holdout_percent": 10,
   "interstitial_cooldown_seconds": 180,
@@ -23,5 +23,19 @@
   "notify_lives_full": true,
   "notify_daily_gift": true,
   "notify_comeback": true,
-  "max_ads_enabled": true
+  "max_ads_enabled": true,
+  "ability_restock_gems": 60,
+  "fish1_unlock_level": 12,
+  "fish1_ticket_cap": 5,
+  "fish1_regen_minutes": 30,
+  "fish1_login_tickets": 2,
+  "fish1_first_win_tickets": 1,
+  "fish1_ad_tickets": 1,
+  "fish1_ad_daily_cap": 10,
+  "fish1_gem_ladder": [25, 40, 60, 90],
+  "fish1_coin_ticket": 150,
+  "fish1_bank_cap": 99,
+  "fish1_double_daily_cap": 20,
+  "fish1_result_interstitial": true,
+  "fish1_notify_full": true
 }
