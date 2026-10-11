@@ -1,0 +1,4 @@
+bin/
+obj/
+evidence/**
+!evidence/final-summary.json
