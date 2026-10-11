@@ -3,17 +3,37 @@
 An ASP.NET 8 service (same stack as `server/league`) that backs the client's `INativePurchaseValidator`
 contract in `Assets/Scripts/Services/Commerce/NativePurchaseValidation.cs`. The client side is
 `Assets/Scripts/Services/Commerce/HttpNativePurchaseValidator.cs`, which posts the proof with the player's
-UGS access token and reads the responses below. It is deployed on Render as `shorepop-verifier`
-(`https://shorepop-verifier.onrender.com`, from the `shorepop-site` repo, `verifier/`).
+UGS access token and reads the responses below. The current Michael-account deployment is
+`shorepop-verifier-michael` at `https://shorepop-verifier-michael.onrender.com`
+(Render `srv-db5h5s942hec738v1cd0`, dedicated `codex/shorepop-michael-verifier` branch).
 
-**2026-10-10 account correction:** the candidate targets Michael's Apple app
+**2026-10-11 deployed identity:** the service targets Michael's Apple app
 `com.dizzywalk.shorepop` and Unity project `aea5f7f0-ebcb-4745-98c5-378bb2ad2feb`.
-Android retains `com.shorepop.game`. PostgreSQL and Play configuration are prepared.
-Michael's In-App Purchase key remains pending; previous Apple key/probe evidence
-belongs to the former account. The new verifier will use a separate free Render
-service and dedicated repository branch. The former SQLite service remains intact.
+Android retains `com.shorepop.game`. PostgreSQL, Play validation and Michael's verified
+In-App Purchase key are configured. Sandbox authentication is verified; Apple production
+currently returns401 on the unreleased app. This is not a transaction receipt.
+The former SQLite service and its `main` auto-deploy setting remain untouched.
 See `DEPLOY.md` for exact source/live identities. Configuration does not establish
 provider authentication or an actual purchase settlement.
+
+## Operational endpoints
+
+`GET /healthz` checks the durable database/schema with a three-second deadline and returns503
+when unavailable, alongside build/configuration flags. It never calls a provider purchase API.
+
+`POST /v1/privacy/account-deletion` requires the current player's Unity bearer token. Input is
+`Store`, `ApplicationId`, optional GUID `AnalyticsInstallId`, and optional32–64 hex-character
+`FirebaseAppInstanceId`. The authenticated subject is authoritative; no input player ID is used.
+The response contains stable `RequestId`, `Status=accepted`, `RequestedAtUnixMs`, `PlayerId`,
+`Store`, `ApplicationId`, and `SettlementRecordsRetained=true`. Acceptance atomically queues
+provider cleanup and permanently suppresses/erases optional encrypted attribution proofs.
+It does not assert that provider deletion is complete. Delete Unity Auth only after acceptance.
+Repeating different identity metadata returns422 without changing the original request.
+
+`POST /v1/privacy/revenue-proofs/erase` uses the same authentication and exact app scope for
+proof-cache erasure alone. Both routes preserve necessary canonical settlement/replay records.
+The support operator must verify optional client-supplied analytics identifiers before erasing
+provider data. Never delete claims/acks or reset the ledger to fulfill a privacy request.
 
 ## Who a transaction belongs to
 

@@ -22,6 +22,22 @@ public sealed class PostgresPurchaseStore : IPurchaseStore
     private readonly long subscriptionRevisionEpoch;
     public string Kind => "postgres";
 
+    /// <summary>Readiness checks connectivity, schema and read grants without reading player records.</summary>
+    public async Task CheckReadinessAsync(CancellationToken cancel)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+        timeout.CancelAfter(TimeSpan.FromSeconds(3));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(timeout.Token);
+        await using var command = new NpgsqlCommand("""
+            SELECT 1 FROM shorepop_verifier.purchases WHERE FALSE;
+            SELECT 1 FROM shorepop_verifier.claims WHERE FALSE;
+            SELECT 1 FROM shorepop_verifier.subscriptions WHERE FALSE;
+            SELECT 1 FROM shorepop_verifier.revenue_proofs WHERE FALSE;
+            """, connection) { CommandTimeout = 3 };
+        await command.ExecuteNonQueryAsync(timeout.Token);
+    }
+
     public PostgresPurchaseStore(string databaseUrlOrConnectionString, long subscriptionRevisionEpoch = 0)
     {
         if (subscriptionRevisionEpoch < 0 || subscriptionRevisionEpoch == long.MaxValue)

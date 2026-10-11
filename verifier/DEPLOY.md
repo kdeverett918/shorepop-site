@@ -1,6 +1,36 @@
 # Deploying shorepop-verifier to Render
 
-## Current deployment (2026-10-10; supersedes the historical steps below)
+## Current deployment (2026-10-11)
+
+The separate free service **srv-db5h5s942hec738v1cd0** is live at
+**https://shorepop-verifier-michael.onrender.com** from
+`kdeverett918/shorepop-site`, branch `codex/shorepop-michael-verifier`, root `verifier`.
+Automatic deploys are off. Trigger only scoped exact-commit deployments on this service.
+The legacy service `srv-das74am0tbcc73e40tu0` and its ledger/automatic deployment setting
+were not changed. Never push the verifier candidate to `main` or restart the legacy service.
+
+Current configuration: PostgreSQL durable store on the existing studio database and dedicated
+schema/role, Michael Unity project `aea5f7f0-ebcb-4745-98c5-378bb2ad2feb` only,
+Google `com.shorepop.game`, Apple `com.dizzywalk.shorepop`, team `UH99QQFW52`,
+ASC app `6821483469`. Michael's IAP key9RDVJJ3BLL is found, loaded privately, and Sandbox
+authentication tested. Production401 remains a post-release recheck; no genuine transaction
+was created during service verification. Exact settings, health/build, authentication boundary,
+and isolated PostgreSQL test receipts are in the game repository at
+`outputs/engineering-completion-20261011/backend/`.
+
+The current catalog has17 products, including two consumable fishing bundles and the permanent
+Ocean Master rod. `/healthz` now checks required PostgreSQL tables and returns503 on a storage
+failure. Keep `VERIFIER_REVENUE_PROOF_KEY` and subscription epoch1791672606408 stable across
+deployments. Rollback must retain durable storage and all additive schema tables, including
+proof suppressions and privacy deletion requests. A successful configuration or health response
+does not establish a genuine store purchase, renewal, refund or attribution delivery.
+
+Account deletion accepts a signed player's durable request before Unity Auth deletion and
+erases optional proof cache in the same transaction; provider cleanup remains pending until
+the operator records actual completion. See README for the client contract. Canonical financial
+settlement and replay-prevention records remain; do not advertise universal immediate erasure.
+
+## Historical preparation (2026-10-10; superseded by the live record above)
 
 **Owner account correction:** publication must use Michael's App Store Connect team.
 The earlier Apple key and Sandbox probe below belong to the prior account and are

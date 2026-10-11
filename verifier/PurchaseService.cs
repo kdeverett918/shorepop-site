@@ -209,10 +209,16 @@ public sealed class PurchaseService(
         {
             StoreVerdict verdict;
             try { verdict = await GoogleVerdict(row.ProductId, row.TransactionId, cancel); }
-            catch (VerifierRefusal refusal) when (refusal.Status == 422)
+            catch (VerifierRefusal refusal) when (refusal.Status == 422 && refusal.Code == "purchase_not_found")
             {
                 // Google no longer returns this token (purged): keep the last verified state.
                 continue;
+            }
+            catch (VerifierRefusal refusal) when (refusal.Status == 422)
+            {
+                // A malformed or mismatched provider response is not evidence that an old token
+                // was purged. Keep the ledger intact, but make the caller retry the refresh.
+                throw new VerifierRefusal(503, "google_server_response_unverifiable");
             }
             var at = now();
             store.Bind(Record(playerId, verdict), at, context => Decide(context, playerId, verdict, at, allowTransfer: false));

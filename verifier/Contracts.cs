@@ -67,6 +67,14 @@ public sealed class ReconcileRequest
 
 public sealed record ErrorBody(string Code);
 
+public sealed class PrivacyScopeRequest
+{
+    public string? Store { get; set; }
+    public string? ApplicationId { get; set; }
+    public string? AnalyticsInstallId { get; set; }
+    public string? FirebaseAppInstanceId { get; set; }
+}
+
 public sealed class VerifierRefusal(int status, string code) : Exception(code)
 {
     public int Status { get; } = status;
@@ -115,7 +123,7 @@ public static class ShorepopCatalog
     };
     public const string SubscriptionProductId = "gg.shorepop.pass.monthly";
 
-    // Mirrors IapCatalog.All in UnityIapProvider.cs (14 rows, 2026-09-26).
+    // Mirrors NativeProductTable including fishing WP5 (17 rows, 2026-10-11).
     public static readonly IReadOnlySet<string> ProductIds = new HashSet<string>(StringComparer.Ordinal)
     {
         "gg.shorepop.noads", "gg.shorepop.starter", "gg.shorepop.lives.refill",
@@ -123,12 +131,13 @@ public static class ShorepopCatalog
         "gg.shorepop.gems.80", "gg.shorepop.gems.260", "gg.shorepop.gems.550",
         "gg.shorepop.gems.1200", "gg.shorepop.gems.2800", SubscriptionProductId,
         "gg.shorepop.welcome", "gg.shorepop.shellbank",
+        "gg.shorepop.fishing.tackle_box", "gg.shorepop.fishing.fishers_crate", "gg.shorepop.fishing.rod_ocean",
     };
 
     // Product types mirror IapCatalog.All (ProductType column): everything else there is Consumable.
     public static readonly IReadOnlySet<string> NonConsumableIds = new HashSet<string>(StringComparer.Ordinal)
     {
-        "gg.shorepop.noads", "gg.shorepop.starter",
+        "gg.shorepop.noads", "gg.shorepop.starter", "gg.shorepop.fishing.rod_ocean",
     };
 
     public static bool IsSubscription(string productId) => productId == SubscriptionProductId;

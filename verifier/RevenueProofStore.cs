@@ -12,6 +12,13 @@ public sealed record RevenueProof(string Store, string ApplicationId, string Pro
     public override string ToString() => "RevenueProof { Receipt = [redacted], Signature = [redacted] }";
 }
 
+/// <summary>Proof-cache erasure only. Canonical settlement identities and state are retained.</summary>
+public sealed record RevenueProofErasureResult(int ClearedProofCount, bool AlreadySuppressed, long SuppressedAtUnixMs);
+
+/// <summary>Durable acceptance for remaining account-data cleanup, not confirmation of completed deletion.</summary>
+public sealed record AccountDeletionRequestResult(string RequestId, string Status, long RequestedAtUnixMs,
+    int ClearedProofCount, bool AlreadySuppressed, bool AlreadyRequested);
+
 /// <summary>
 /// An encrypted, short-lived recovery copy of a cryptographically checked native proof. Save is called
 /// only after the binding verifier has validated the receipt and signature against a settled purchase.
@@ -43,6 +50,15 @@ public sealed class RevenueProofStore
               PRIMARY KEY(store,app_id,ledger_key), CHECK(octet_length(ciphertext)<=65536), CHECK(expires_ms>created_ms));
             CREATE INDEX IF NOT EXISTS revenue_proofs_expiry ON shorepop_verifier.revenue_proofs(expires_ms);
             ALTER TABLE shorepop_verifier.revenue_proofs ADD COLUMN IF NOT EXISTS revenue_order_id TEXT NOT NULL DEFAULT '';
+            CREATE TABLE IF NOT EXISTS shorepop_verifier.revenue_proof_suppressions(
+              store TEXT NOT NULL, app_id TEXT NOT NULL, player_id TEXT NOT NULL, suppressed_ms BIGINT NOT NULL,
+              PRIMARY KEY(store,app_id,player_id));
+            CREATE TABLE IF NOT EXISTS shorepop_verifier.privacy_deletion_requests(
+              store TEXT NOT NULL, app_id TEXT NOT NULL, player_id TEXT NOT NULL, request_id UUID NOT NULL UNIQUE,
+              analytics_install_id UUID NULL, requested_ms BIGINT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+              firebase_app_instance_id TEXT NULL,
+              PRIMARY KEY(store,app_id,player_id));
+            ALTER TABLE shorepop_verifier.privacy_deletion_requests ADD COLUMN IF NOT EXISTS firebase_app_instance_id TEXT NULL;
             """, connection, tx);
         command.ExecuteNonQuery();
         tx.Commit();
@@ -169,10 +185,138 @@ public sealed class RevenueProofStore
         return count;
     }
 
+    /// <summary>
+    /// Permanently suppress proof recovery for this exact player and application, even when no proof
+    /// exists yet. This erases only cached attribution proof bytes, never settlement claims, acknowledgments,
+    /// refunds, subscription revisions or canonical store tokens/JWS. Authentication belongs to the caller.
+    /// </summary>
+    public RevenueProofErasureResult EraseForPlayer(string playerId, string store, string applicationId, DateTimeOffset now)
+    {
+        if (!VerifierOptions.ValidPlayer(playerId) || !ShorepopCatalog.MatchesApplication(store, applicationId))
+            throw new VerifierRefusal(422, "revenue_proof_erasure_request_invalid");
+        using var connection = Open();
+        using var tx = connection.BeginTransaction();
+        PostgresPurchaseStore.Lock(connection, tx, store, applicationId);
+        var result = EraseForPlayer(connection, tx, playerId, store, applicationId, now);
+        tx.Commit();
+        return result;
+    }
+
+    /// <summary>
+    /// Accepts an authenticated player's deletion request durably and atomically suppresses cached proofs.
+    /// Remaining provider cleanup stays pending for support. Repeats preserve the request identity and
+    /// original analytics identifier; conflicting metadata is refused without changing the stored request.
+    /// </summary>
+    public AccountDeletionRequestResult RequestAccountDeletion(string playerId, string store, string applicationId,
+        string? analyticsInstallId, DateTimeOffset now, string? firebaseAppInstanceId = null)
+    {
+        if (!VerifierOptions.ValidPlayer(playerId) || !ShorepopCatalog.MatchesApplication(store, applicationId))
+            throw new VerifierRefusal(422, "privacy_deletion_request_invalid");
+        Guid? analyticsId = null;
+        if (analyticsInstallId != null)
+        {
+            if (!Guid.TryParseExact(analyticsInstallId, "D", out var parsed))
+                throw new VerifierRefusal(422, "privacy_deletion_request_invalid");
+            analyticsId = parsed;
+        }
+        if (firebaseAppInstanceId != null)
+        {
+            if (firebaseAppInstanceId.Length is < 32 or > 64 || !firebaseAppInstanceId.All(Uri.IsHexDigit))
+                throw new VerifierRefusal(422, "privacy_deletion_request_invalid");
+            firebaseAppInstanceId = firebaseAppInstanceId.ToLowerInvariant();
+        }
+        using var connection = Open();
+        using var tx = connection.BeginTransaction();
+        PostgresPurchaseStore.Lock(connection, tx, store, applicationId);
+        Guid requestId = Guid.NewGuid();
+        long requestedAt = now.ToUnixTimeMilliseconds();
+        bool alreadyRequested = false;
+        using (var command = new NpgsqlCommand("""
+            SELECT request_id,analytics_install_id,requested_ms,firebase_app_instance_id FROM shorepop_verifier.privacy_deletion_requests
+            WHERE store=@s AND app_id=@a AND player_id=@p
+            """, connection, tx))
+        {
+            command.Parameters.AddWithValue("s", store); command.Parameters.AddWithValue("a", applicationId);
+            command.Parameters.AddWithValue("p", playerId);
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                Guid? originalAnalyticsId = reader.IsDBNull(1) ? null : reader.GetGuid(1);
+                string? originalFirebaseId = reader.IsDBNull(3) ? null : reader.GetString(3);
+                if (originalAnalyticsId != analyticsId || originalFirebaseId != firebaseAppInstanceId)
+                    throw new VerifierRefusal(422, "privacy_deletion_metadata_conflict");
+                requestId = reader.GetGuid(0); requestedAt = reader.GetInt64(2); alreadyRequested = true;
+            }
+        }
+        if (!alreadyRequested)
+        {
+            using var command = new NpgsqlCommand("""
+                INSERT INTO shorepop_verifier.privacy_deletion_requests
+                  (store,app_id,player_id,request_id,analytics_install_id,requested_ms,status,firebase_app_instance_id)
+                VALUES(@s,@a,@p,@id,@analytics,@now,'pending',@firebase)
+                """, connection, tx);
+            command.Parameters.AddWithValue("s", store); command.Parameters.AddWithValue("a", applicationId);
+            command.Parameters.AddWithValue("p", playerId); command.Parameters.AddWithValue("id", requestId);
+            command.Parameters.AddWithValue("analytics", NpgsqlTypes.NpgsqlDbType.Uuid, (object?)analyticsId ?? DBNull.Value);
+            command.Parameters.AddWithValue("firebase", NpgsqlTypes.NpgsqlDbType.Text, (object?)firebaseAppInstanceId ?? DBNull.Value);
+            command.Parameters.AddWithValue("now", requestedAt);
+            command.ExecuteNonQuery();
+        }
+        var erasure = EraseForPlayer(connection, tx, playerId, store, applicationId, now);
+        tx.Commit();
+        return new AccountDeletionRequestResult(requestId.ToString("D"), "accepted", requestedAt,
+            erasure.ClearedProofCount, erasure.AlreadySuppressed, alreadyRequested);
+    }
+
+    private static RevenueProofErasureResult EraseForPlayer(NpgsqlConnection connection, NpgsqlTransaction tx,
+        string playerId, string store, string applicationId, DateTimeOffset now)
+    {
+        bool alreadySuppressed;
+        using (var command = new NpgsqlCommand("""
+            INSERT INTO shorepop_verifier.revenue_proof_suppressions(store,app_id,player_id,suppressed_ms)
+            VALUES(@s,@a,@p,@now) ON CONFLICT(store,app_id,player_id) DO NOTHING
+            """, connection, tx))
+        {
+            command.Parameters.AddWithValue("s", store); command.Parameters.AddWithValue("a", applicationId);
+            command.Parameters.AddWithValue("p", playerId); command.Parameters.AddWithValue("now", now.ToUnixTimeMilliseconds());
+            alreadySuppressed = command.ExecuteNonQuery() == 0;
+        }
+        int cleared;
+        using (var command = new NpgsqlCommand("""
+            UPDATE shorepop_verifier.revenue_proofs SET ciphertext=''::bytea
+            WHERE store=@s AND app_id=@a AND player_id=@p AND octet_length(ciphertext)>0
+            """, connection, tx))
+        {
+            command.Parameters.AddWithValue("s", store); command.Parameters.AddWithValue("a", applicationId);
+            command.Parameters.AddWithValue("p", playerId);
+            cleared = command.ExecuteNonQuery();
+        }
+        long suppressedAt;
+        using (var command = new NpgsqlCommand("""
+            SELECT suppressed_ms FROM shorepop_verifier.revenue_proof_suppressions
+            WHERE store=@s AND app_id=@a AND player_id=@p
+            """, connection, tx))
+        {
+            command.Parameters.AddWithValue("s", store); command.Parameters.AddWithValue("a", applicationId);
+            command.Parameters.AddWithValue("p", playerId);
+            suppressedAt = (long)command.ExecuteScalar()!;
+        }
+        return new RevenueProofErasureResult(cleared, alreadySuppressed, suppressedAt);
+    }
+
     private static Identity? Authorized(NpgsqlConnection connection, NpgsqlTransaction tx, string player, string store, string app, string ledger, string product)
     {
         if (string.IsNullOrEmpty(player) || !ShorepopCatalog.MatchesApplication(store, app) || !ShorepopCatalog.ProductIds.Contains(product) ||
             ledger.Length != 67 || !ledger.StartsWith("tx-", StringComparison.Ordinal)) return null;
+        using (var suppression = new NpgsqlCommand("""
+            SELECT EXISTS(SELECT 1 FROM shorepop_verifier.revenue_proof_suppressions
+              WHERE store=@s AND app_id=@a AND player_id=@p)
+            """, connection, tx))
+        {
+            suppression.Parameters.AddWithValue("s", store); suppression.Parameters.AddWithValue("a", app);
+            suppression.Parameters.AddWithValue("p", player);
+            if ((bool)suppression.ExecuteScalar()!) return null;
+        }
         using var command = new NpgsqlCommand("""
             SELECT p.transaction_id,p.refunded,p.revenue_refunded,p.revenue_transaction_id,
               (SELECT first_claim.player_id FROM shorepop_verifier.claims first_claim

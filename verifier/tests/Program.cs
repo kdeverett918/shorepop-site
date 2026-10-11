@@ -217,7 +217,8 @@ foreach (var (label, makeStore) in new (string, Func<IPurchaseStore>)[] { ("memo
     });
     await CaseAsync($"{label}: consumable presented by a second player -> 409, not claimed", async () =>
     {
-        string[] consumables = ["gg.shorepop.gems.80", "gg.shorepop.coins.600", "gg.shorepop.lives.refill", "gg.shorepop.abilities.bundle", "gg.shorepop.welcome", "gg.shorepop.shellbank"];
+        string[] consumables = ["gg.shorepop.gems.80", "gg.shorepop.coins.600", "gg.shorepop.lives.refill", "gg.shorepop.abilities.bundle", "gg.shorepop.welcome", "gg.shorepop.shellbank",
+            "gg.shorepop.fishing.tackle_box", "gg.shorepop.fishing.fishers_crate"];
         for (int i = 0; i < consumables.Length; i++)
         {
             string product = consumables[i], id = "310000000" + i;
@@ -489,6 +490,30 @@ await CaseAsync("google (fake API): product states, quantity, test purchases, su
     Expect(rows.Count == 5 && rows.Single(r => r.TransactionId == "tok-ok").Refunded, "reconcile sees the later refund");
 });
 
+await CaseAsync("google refresh: absent token retains state; invalid current response is retryable", async () =>
+{
+    var google = new FakeGoogle(true);
+    var store = new InMemoryPurchaseStore();
+    var service = Service(store, google);
+    const string token = "refresh-contract-token", product = "gg.shorepop.noads", player = "refreshPlayer";
+    google.Products[token] = """{"productLineItem":[{"productId":"gg.shorepop.noads"}],"purchaseStateContext":{"purchaseState":"PURCHASED"}}""";
+    await service.ValidateAsync(player, new NativePurchaseProof { Store = ShorepopCatalog.GoogleStore,
+        ApplicationId = ShorepopCatalog.GooglePackageId, ProductId = product, TransactionId = token }, default);
+    var request = new ReconcileRequest { Store = ShorepopCatalog.GoogleStore, ApplicationId = ShorepopCatalog.GooglePackageId };
+    google.Products.Remove(token);
+    Expect((await service.ReconcileAsync(player, request, default)).Single().ProductId == product, "purged token lost verified state");
+    foreach (string body in new[] {
+        """{"productLineItem":[{"productId":"gg.shorepop.gems.80"}],"purchaseStateContext":{"purchaseState":"PURCHASED"}}""",
+        """{"productLineItem":[{"productId":"gg.shorepop.noads"}],"purchaseStateContext":{"purchaseState":"UNKNOWN"}}""",
+        """{"purchaseStateContext":{"purchaseState":"PURCHASED"}}""" })
+    {
+        google.Products[token] = body;
+        await RejectsAsync(503, "google_server_response_unverifiable", () => service.ReconcileAsync(player, request, default));
+        Expect(!store.List(player, ShorepopCatalog.GoogleStore, ShorepopCatalog.GooglePackageId).Single().Refunded,
+            "invalid response changed retained entitlement");
+    }
+});
+
 await CaseAsync("apple reconcile (fake App Store Server API): later refund and renewal are picked up", async () =>
 {
     var api = new FakeApple { IsConfigured = true };
@@ -519,9 +544,11 @@ await CaseAsync("apple reconcile (fake App Store Server API): later refund and r
 Case("catalog kinds mirror IapCatalog; Apple type never loosens a consumable", () =>
 {
     var consumables = ShorepopCatalog.ProductIds.Where(id => ShorepopCatalog.CatalogKind(id) == ProductKind.Consumable).OrderBy(x => x, StringComparer.Ordinal).ToArray();
-    Expect(consumables.Length == 11 && consumables.All(id => id.Contains(".gems.") || id.Contains(".coins.") || id is "gg.shorepop.lives.refill"
-        or "gg.shorepop.abilities.bundle" or "gg.shorepop.welcome" or "gg.shorepop.shellbank"), "consumable set " + string.Join(",", consumables));
-    Expect(ShorepopCatalog.CatalogKind("gg.shorepop.noads") == ProductKind.NonConsumable && ShorepopCatalog.CatalogKind("gg.shorepop.starter") == ProductKind.NonConsumable, "non-consumables");
+    Expect(consumables.Length == 13 && consumables.All(id => id.Contains(".gems.") || id.Contains(".coins.") || id is "gg.shorepop.lives.refill"
+        or "gg.shorepop.abilities.bundle" or "gg.shorepop.welcome" or "gg.shorepop.shellbank"
+        or "gg.shorepop.fishing.tackle_box" or "gg.shorepop.fishing.fishers_crate"), "consumable set " + string.Join(",", consumables));
+    Expect(ShorepopCatalog.CatalogKind("gg.shorepop.noads") == ProductKind.NonConsumable && ShorepopCatalog.CatalogKind("gg.shorepop.starter") == ProductKind.NonConsumable &&
+        ShorepopCatalog.CatalogKind("gg.shorepop.fishing.rod_ocean") == ProductKind.NonConsumable, "non-consumables");
     Expect(ShorepopCatalog.CatalogKind(ShorepopCatalog.SubscriptionProductId) == ProductKind.Subscription, "subscription");
     Expect(ShorepopCatalog.AppleKind("Non-Consumable", "gg.shorepop.gems.80") == ProductKind.Consumable, "mislabeled consumable");
     Expect(ShorepopCatalog.AppleKind("Consumable", "gg.shorepop.noads") == ProductKind.Consumable, "Apple's stricter type wins");

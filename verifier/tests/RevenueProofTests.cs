@@ -34,10 +34,12 @@ internal static class RevenueProofTests
         if (configuration.Database?.EndsWith("_test", StringComparison.Ordinal) != true)
             throw new InvalidOperationException("Revenue proof integration tests require a dedicated _test database.");
         string run = "proof-test-" + Guid.NewGuid().ToString("N");
+        string erasurePrefix = "proofErase" + Guid.NewGuid().ToString("N");
         byte[] key = RandomNumberGenerator.GetBytes(32);
         var canonical = new PostgresPurchaseStore(Configuration);
         var proofs = new RevenueProofStore(Configuration, key);
         string Player(string label) => run + "-" + label;
+        string ErasurePlayer(string label) => erasurePrefix + label;
         PurchaseRecord Purchase(string label, string player = "owner", string product = Product) =>
             new(Store, App, run + "-" + label, Player(player), product, "Sandbox", false, 0, null, null, 100,
                 true, 2990000, "USD", "GPA." + run + "-" + label, Now.ToUnixTimeMilliseconds());
@@ -173,6 +175,211 @@ internal static class RevenueProofTests
                 Bind(known);
                 Expect(Contents(Get(known)) == "delayed-receipt" && Get(known)!.ExpiresUtc == Now.AddDays(30), "late economics did not bind original receipt/window");
             });
+            test("revenue proof postgres: erasure survives reopen and preserves canonical settlement state", () =>
+            {
+                var row = Purchase("erase-owned", product: ShorepopCatalog.SubscriptionProductId) with
+                {
+                    PlayerId = ErasurePlayer("owner"), PurchasedPeriodExpiryUtcTicks = Now.AddDays(60).UtcTicks,
+                    SignedPayload = "canonical-store-proof",
+                };
+                Bind(row); Save(row, row.PlayerId, "erase-private-receipt", "erase-private-signature", Now);
+                Expect(canonical.Ack(Store, App, row.TransactionId, row.PlayerId, Now) == AckOutcome.Acked, "initial ack");
+                var before = canonical.List(row.PlayerId, Store, App).ToArray();
+                var claimsBefore = canonical.Claims(Store, App, row.TransactionId).ToArray();
+                var revisionBefore = canonical.Subscription(row.PlayerId, Store, App);
+                var erased = proofs.EraseForPlayer(row.PlayerId, Store, App, Now.AddHours(1));
+                Expect(erased == new RevenueProofErasureResult(1, false, Now.AddHours(1).ToUnixTimeMilliseconds()), "first erasure result");
+                Expect(Get(row) == null, "erased proof readable");
+                Expect(canonical.List(row.PlayerId, Store, App).SequenceEqual(before), "canonical purchase changed");
+                Expect(canonical.Claims(Store, App, row.TransactionId).SequenceEqual(claimsBefore), "claim/ack changed");
+                Expect(canonical.Subscription(row.PlayerId, Store, App) == revisionBefore, "subscription revision changed");
+                var reopened = new RevenueProofStore(Configuration, key);
+                var repeated = reopened.EraseForPlayer(row.PlayerId, Store, App, Now.AddDays(1));
+                Expect(repeated == new RevenueProofErasureResult(0, true, erased.SuppressedAtUnixMs), "repeat changed suppression identity");
+                Refusal(() => reopened.Save(row, row.PlayerId, Receipt(row, "replayed-proof"), "signature", Now.AddDays(1)));
+                var renewal = row with
+                {
+                    RevenueTransactionId = row.RevenueTransactionId + "..1", RevenuePurchasedAtUnixMs = Now.AddDays(31).ToUnixTimeMilliseconds(),
+                    SignedDateUnixMs = row.SignedDateUnixMs + 1, PurchasedPeriodExpiryUtcTicks = Now.AddDays(90).UtcTicks,
+                };
+                Bind(renewal);
+                Refusal(() => reopened.Save(renewal, renewal.PlayerId, Receipt(renewal, "renewal-proof"), "signature", Now.AddDays(31)));
+                Expect(Get(renewal, at: Now.AddDays(31)) == null, "renewal repopulated erased proof");
+                Expect(canonical.Subscription(row.PlayerId, Store, App) == (revisionBefore.Revision + 1, renewal.PurchasedPeriodExpiryUtcTicks), "settlement stopped updating after proof erasure");
+                using var connection = Open();
+                using var command = new NpgsqlCommand("SELECT octet_length(ciphertext) FROM shorepop_verifier.revenue_proofs WHERE store=@s AND app_id=@a AND ledger_key=@l", connection);
+                command.Parameters.AddWithValue("s", Store); command.Parameters.AddWithValue("a", App);
+                command.Parameters.AddWithValue("l", RevenueProofStore.LedgerKey(Store, App, row.TransactionId));
+                Expect(Convert.ToInt32(command.ExecuteScalar()) == 0, "erasure did not remove ciphertext bytes");
+            });
+            test("revenue proof postgres: erasure is exact player and application scoped", () =>
+            {
+                string player = ErasurePlayer("scoped");
+                var erased = Purchase("erase-scope") with { PlayerId = player };
+                var other = Purchase("erase-other") with { PlayerId = ErasurePlayer("other") };
+                var apple = Purchase("erase-apple") with
+                {
+                    PlayerId = player, Store = ShorepopCatalog.AppleStore, ApplicationId = ShorepopCatalog.AppleBundleId,
+                    RevenueTransactionId = run + "-erase-apple",
+                };
+                Bind(erased); Bind(other); Bind(apple);
+                Save(erased, player, "to-erase", "signature", Now);
+                Save(other, other.PlayerId, "other-player-proof", "signature", Now);
+                proofs.Save(apple, player, "apple-proof", "", Now);
+                proofs.EraseForPlayer(player, Store, App, Now);
+                Expect(Get(erased) == null && Contents(Get(other)) == "other-player-proof", "erasure crossed player scope");
+                Expect(proofs.Get(player, apple.Store, apple.ApplicationId, RevenueProofStore.LedgerKey(apple.Store, apple.ApplicationId, apple.TransactionId), apple.ProductId, Now)?.Receipt == "apple-proof", "erasure crossed application scope");
+                foreach (var invalid in new[]
+                {
+                    (Player: "", Store, App), (Player: "invalid/player", Store, App), (Player: new string('a', 129), Store, App),
+                    (Player: player, Store: "unknown-store", App), (Player: player, Store, App: ShorepopCatalog.AppleBundleId),
+                    (Player: player, Store: ShorepopCatalog.AppleStore, App),
+                })
+                {
+                    try { proofs.EraseForPlayer(invalid.Player, invalid.Store, invalid.App, Now); }
+                    catch (VerifierRefusal error)
+                    {
+                        Expect(error.Status == 422 && error.Code == "revenue_proof_erasure_request_invalid", "erasure scope refusal");
+                        continue;
+                    }
+                    throw new Exception("invalid erasure scope accepted");
+                }
+                Expect(Contents(Get(other)) == "other-player-proof", "invalid requests changed another player's proof");
+            });
+            test("revenue proof postgres: erasure before first cache suppresses later receipts and leaves refunds and transfers intact", () =>
+            {
+                string player = ErasurePlayer("empty");
+                Expect(proofs.EraseForPlayer(player, Store, App, Now).ClearedProofCount == 0, "empty erasure cleared rows");
+                var row = Purchase("erase-later") with { PlayerId = player };
+                Bind(row);
+                Refusal(() => Save(row, player, "later-receipt", "signature", Now.AddDays(1)));
+                Expect(Get(row) == null, "later receipt became recoverable");
+                Expect(canonical.Ack(Store, App, row.TransactionId, player, Now) == AckOutcome.Acked, "erasure prevented settlement ack");
+                Bind(row with { Refunded = true });
+                var transferred = Purchase("erase-transfer") with { PlayerId = ErasurePlayer("previous") };
+                Bind(transferred);
+                canonical.Bind(transferred with { PlayerId = player }, Now, _ => ClaimDecision.Transferred("test recovery"));
+                var transfersBefore = canonical.Transfers(Store, App, transferred.TransactionId).ToArray();
+                var rowsBefore = canonical.List(player, Store, App).ToArray();
+                proofs.EraseForPlayer(player, Store, App, Now.AddDays(1));
+                Expect(canonical.List(player, Store, App).SequenceEqual(rowsBefore), "repeat erasure changed refund or purchase");
+                Expect(canonical.Transfers(Store, App, transferred.TransactionId).SequenceEqual(transfersBefore), "transfer history changed");
+            });
+            test("revenue proof postgres: concurrent save and erasure finish permanently suppressed", () =>
+            {
+                var row = Purchase("erase-race") with { PlayerId = ErasurePlayer("race") };
+                Bind(row); Save(row, row.PlayerId, "initial-race-proof", "signature", Now);
+                var operations = Enumerable.Range(0, 6).Select(i => Task.Run(() =>
+                {
+                    if (i == 2) { proofs.EraseForPlayer(row.PlayerId, Store, App, Now); return; }
+                    try { Save(row, row.PlayerId, "racing-proof", "signature", Now); }
+                    catch (VerifierRefusal refusal) { Expect(refusal.Code == "revenue_proof_unavailable", "race refusal"); }
+                })).ToArray();
+                Expect(Task.WaitAll(operations, TimeSpan.FromSeconds(45)), "save/erasure lock did not finish");
+                Expect(Get(row) == null, "concurrent save restored erased proof");
+                Refusal(() => Save(row, row.PlayerId, "after-race-proof", "signature", Now));
+                var repeated = proofs.EraseForPlayer(row.PlayerId, Store, App, Now);
+                Expect(repeated.AlreadySuppressed && repeated.ClearedProofCount == 0, "concurrent save retained ciphertext");
+            });
+            test("privacy postgres: accepted deletion request persists pending with stable identity and proof suppression", () =>
+            {
+                var row = Purchase("privacy-request") with { PlayerId = ErasurePlayer("privacy") };
+                Bind(row); Save(row, row.PlayerId, "privacy-receipt", "signature", Now);
+                string analytics = Guid.NewGuid().ToString("D");
+                var result = proofs.RequestAccountDeletion(row.PlayerId, Store, App, analytics, Now);
+                Expect(Guid.TryParseExact(result.RequestId, "D", out _) && result.Status == "accepted" &&
+                    result.RequestedAtUnixMs == Now.ToUnixTimeMilliseconds() && result.ClearedProofCount == 1 && !result.AlreadyRequested, "request acceptance result");
+                Expect(Get(row) == null && canonical.List(row.PlayerId, Store, App).Single() == row, "request changed settlement or retained recoverable proof");
+                Refusal(() => Save(row, row.PlayerId, "post-request-receipt", "signature", Now));
+                var reopened = new RevenueProofStore(Configuration, key);
+                var again = reopened.RequestAccountDeletion(row.PlayerId, Store, App, analytics.ToUpperInvariant(), Now.AddDays(1));
+                Expect(again.RequestId == result.RequestId && again.RequestedAtUnixMs == result.RequestedAtUnixMs &&
+                    again.Status == "accepted" && again.AlreadyRequested && again.AlreadySuppressed && again.ClearedProofCount == 0, "retry changed request identity");
+                foreach (string? conflicting in new[] { null, Guid.NewGuid().ToString("D") })
+                {
+                    try { proofs.RequestAccountDeletion(row.PlayerId, Store, App, conflicting, Now); }
+                    catch (VerifierRefusal error) { Expect(error.Code == "privacy_deletion_metadata_conflict" && error.Status == 422, "metadata conflict refusal"); continue; }
+                    throw new Exception("request metadata was silently replaced");
+                }
+                using var connection = Open();
+                using var command = new NpgsqlCommand("SELECT status,analytics_install_id,request_id,requested_ms FROM shorepop_verifier.privacy_deletion_requests WHERE store=@s AND app_id=@a AND player_id=@p", connection);
+                command.Parameters.AddWithValue("s", Store); command.Parameters.AddWithValue("a", App); command.Parameters.AddWithValue("p", row.PlayerId);
+                using var reader = command.ExecuteReader(); Expect(reader.Read(), "durable request missing");
+                Expect(reader.GetString(0) == "pending" && reader.GetGuid(1) == Guid.Parse(analytics) &&
+                    reader.GetGuid(2).ToString("D") == result.RequestId && reader.GetInt64(3) == result.RequestedAtUnixMs, "stored request changed or falsely completed");
+            });
+            test("privacy postgres: optional analytics identity and invalid request metadata are handled without partial writes", () =>
+            {
+                string player = ErasurePlayer("privacyEmpty");
+                foreach (string invalid in new[] { "", "not-a-guid", Guid.NewGuid().ToString("N") })
+                {
+                    try { proofs.RequestAccountDeletion(player, Store, App, invalid, Now); }
+                    catch (VerifierRefusal error) { Expect(error.Status == 422 && error.Code == "privacy_deletion_request_invalid", "invalid GUID refusal"); continue; }
+                    throw new Exception("invalid analytics GUID accepted");
+                }
+                var result = proofs.RequestAccountDeletion(player, Store, App, null, Now);
+                Expect(!result.AlreadyRequested && !result.AlreadySuppressed && result.ClearedProofCount == 0, "invalid request left partial state");
+                var again = proofs.RequestAccountDeletion(player, Store, App, null, Now.AddDays(1));
+                Expect(again.AlreadyRequested && again.RequestId == result.RequestId, "null metadata request not idempotent");
+                var row = Purchase("privacy-later-proof") with { PlayerId = player }; Bind(row);
+                Refusal(() => Save(row, player, "late-request-proof", "signature", Now));
+                try { proofs.RequestAccountDeletion(ErasurePlayer("invalidScope"), ShorepopCatalog.AppleStore, App, null, Now); }
+                catch (VerifierRefusal error) { Expect(error.Status == 422 && error.Code == "privacy_deletion_request_invalid", "invalid privacy scope refusal"); return; }
+                throw new Exception("invalid privacy application accepted");
+            });
+            test("privacy postgres: Firebase identifier is normalized, bounded and immutable on repeat", () =>
+            {
+                string player = ErasurePlayer("firebase");
+                foreach (string invalid in new[] { "", new string('a', 31), new string('b', 65), new string('x', 32), "Ｆ" + new string('a', 31) })
+                {
+                    try { proofs.RequestAccountDeletion(player, Store, App, null, Now, invalid); }
+                    catch (VerifierRefusal error) { Expect(error.Status == 422 && error.Code == "privacy_deletion_request_invalid", "invalid Firebase ID refusal"); continue; }
+                    throw new Exception("invalid Firebase ID accepted");
+                }
+                string firebase = new string('a', 32);
+                var first = proofs.RequestAccountDeletion(player, Store, App, null, Now, firebase.ToUpperInvariant());
+                Expect(!first.AlreadyRequested && !first.AlreadySuppressed, "invalid Firebase request wrote partial state");
+                Expect(proofs.RequestAccountDeletion(player, Store, App, null, Now.AddDays(1), firebase).RequestId == first.RequestId, "case normalized retry changed request");
+                foreach (string? conflicting in new[] { null, new string('b', 32) })
+                {
+                    try { proofs.RequestAccountDeletion(player, Store, App, null, Now, conflicting); }
+                    catch (VerifierRefusal error) { Expect(error.Status == 422 && error.Code == "privacy_deletion_metadata_conflict", "Firebase metadata conflict refusal"); continue; }
+                    throw new Exception("Firebase ID silently replaced");
+                }
+                using var connection = Open();
+                using var command = new NpgsqlCommand("SELECT firebase_app_instance_id FROM shorepop_verifier.privacy_deletion_requests WHERE player_id=@p", connection);
+                command.Parameters.AddWithValue("p", player);
+                Expect((string)command.ExecuteScalar()! == firebase, "stored Firebase identity not normalized");
+                var max = proofs.RequestAccountDeletion(ErasurePlayer("firebaseMax"), Store, App, null, Now, new string('C', 64));
+                Expect(max.Status == "accepted", "maximum Firebase ID length rejected");
+            });
+            test("privacy postgres: suppression failure rolls back request acceptance and keeps original proof", () =>
+            {
+                var row = Purchase("privacy-rollback") with { PlayerId = ErasurePlayer("rollback") };
+                Bind(row); Save(row, row.PlayerId, "rollback-original-proof", "signature", Now);
+                string constraint = "privacy_fault_" + Guid.NewGuid().ToString("N");
+                // Both interpolated values are generated alphanumeric test identities, never request data.
+                using (var connection = Open())
+                using (var command = new NpgsqlCommand("ALTER TABLE shorepop_verifier.revenue_proof_suppressions ADD CONSTRAINT " + constraint +
+                    " CHECK(player_id <> '" + row.PlayerId + "') NOT VALID", connection)) command.ExecuteNonQuery();
+                try
+                {
+                    bool refused = false;
+                    try { proofs.RequestAccountDeletion(row.PlayerId, Store, App, null, Now); }
+                    catch (PostgresException error) { Expect(error.SqlState == "23514", "unexpected fault-injection error"); refused = true; }
+                    Expect(refused && Contents(Get(row)) == "rollback-original-proof", "failed request changed cached proof");
+                    using var connection = Open();
+                    using var command = new NpgsqlCommand("SELECT COUNT(*) FROM shorepop_verifier.privacy_deletion_requests WHERE player_id=@p", connection);
+                    command.Parameters.AddWithValue("p", row.PlayerId);
+                    Expect((long)command.ExecuteScalar()! == 0, "request was accepted without suppression");
+                }
+                finally
+                {
+                    using var connection = Open();
+                    using var command = new NpgsqlCommand("ALTER TABLE shorepop_verifier.revenue_proof_suppressions DROP CONSTRAINT " + constraint, connection);
+                    command.ExecuteNonQuery();
+                }
+            });
             test("revenue proof postgres: thirty-day expiry clears ciphertext and replay never extends or recreates its window", () =>
             {
                 var row = Purchase("expiry"); Bind(row); Save(row, row.PlayerId, "initial-receipt", "signature", Now);
@@ -209,13 +416,16 @@ internal static class RevenueProofTests
             using var connection = Open();
             using var tx = connection.BeginTransaction();
             using var cleanup = new NpgsqlCommand("""
-                DELETE FROM shorepop_verifier.revenue_proofs WHERE player_id LIKE @prefix;
+                DELETE FROM shorepop_verifier.revenue_proofs WHERE player_id LIKE @prefix OR player_id LIKE @erasure;
+                DELETE FROM shorepop_verifier.revenue_proof_suppressions WHERE player_id LIKE @erasure;
+                DELETE FROM shorepop_verifier.privacy_deletion_requests WHERE player_id LIKE @erasure;
                 DELETE FROM shorepop_verifier.transfers WHERE transaction_id LIKE @prefix;
                 DELETE FROM shorepop_verifier.claims WHERE transaction_id LIKE @prefix;
-                DELETE FROM shorepop_verifier.subscriptions WHERE player_id LIKE @prefix;
+                DELETE FROM shorepop_verifier.subscriptions WHERE player_id LIKE @prefix OR player_id LIKE @erasure;
                 DELETE FROM shorepop_verifier.purchases WHERE transaction_id LIKE @prefix;
                 """, connection, tx);
             cleanup.Parameters.AddWithValue("prefix", run + "-%"); cleanup.Parameters.AddWithValue("s", Store); cleanup.Parameters.AddWithValue("a", App);
+            cleanup.Parameters.AddWithValue("erasure", erasurePrefix + "%");
             cleanup.ExecuteNonQuery(); tx.Commit();
         }
     }

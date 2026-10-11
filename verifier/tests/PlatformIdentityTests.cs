@@ -38,6 +38,20 @@ internal static class PlatformIdentityTests
             catch (VerifierRefusal refused) { Check(refused.Code == code, "wrong refusal: " + refused.Code); return; }
             throw new Exception("accepted invalid platform identity");
         }
+        test("fishing catalog: all products retain their exact settlement kind", () =>
+        {
+            Check(ShorepopCatalog.ProductIds.Count == 17, "catalog must match integrated 17-product client");
+            foreach (string id in new[] { "gg.shorepop.fishing.tackle_box", "gg.shorepop.fishing.fishers_crate" })
+            {
+                Check(ShorepopCatalog.ProductIds.Contains(id), "fishing product absent");
+                Check(ShorepopCatalog.CatalogKind(id) == ProductKind.Consumable, "fishing bundle must be single-owner");
+                Check(ShorepopCatalog.AppleKind("Non-Consumable", id) == ProductKind.Consumable, "store type widened bundle ownership");
+            }
+            const string rod = "gg.shorepop.fishing.rod_ocean";
+            Check(ShorepopCatalog.ProductIds.Contains(rod) && ShorepopCatalog.CatalogKind(rod) == ProductKind.NonConsumable,
+                "permanent fishing rod must restore as entitlement");
+            Check(!ShorepopCatalog.SingleOwner(ShorepopCatalog.CatalogKind(rod)), "rod restore restricted to one anonymous player");
+        });
         test("platform identity: Apple uses Michael bundle and Android retains existing package", () =>
         {
             var a = service.ValidateAsync(player, Apple(appleApp, "shared-identity-transaction"), default).GetAwaiter().GetResult();

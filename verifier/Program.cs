@@ -115,16 +115,32 @@ app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();
 
-app.MapGet("/healthz", (IAppleServerApi appleApi, IGooglePlayApi google) => Results.Json(new
+app.MapGet("/healthz", async (HttpContext context, IAppleServerApi appleApi, IGooglePlayApi google) =>
 {
-    status = settings.Configured ? "ok" : "unconfigured",
-    apple = "jws_chain_g3",
-    appleServerApi = appleApi.Configured,
-    google = google.Configured ? "configured" : "not_configured",
-    store = settings.StoreKind switch { "postgres" => "postgres_durable", "memory" => "memory", _ => "sqlite_ephemeral" },
-    build = Environment.GetEnvironmentVariable("RENDER_GIT_COMMIT") ?? "local",
-    revenueProofRecovery = revenueProofs != null,
-}));
+    bool available = settings.Configured;
+    string storage = "not_checked";
+    if (available && app.Services.GetRequiredService<IPurchaseStore>() is PostgresPurchaseStore postgres)
+    {
+        try { await postgres.CheckReadinessAsync(context.RequestAborted); storage = "reachable"; }
+        catch (Exception error) when (error is NpgsqlException or TimeoutException or OperationCanceledException)
+        {
+            available = false; storage = "unavailable";
+            app.Logger.LogWarning("readiness storage unavailable");
+        }
+    }
+    return Results.Json(new
+    {
+        status = !settings.Configured ? "unconfigured" : available ? "ok" : "unavailable",
+        storage,
+        apple = "jws_chain_g3",
+        appleServerApi = appleApi.Configured,
+        google = google.Configured ? "configured" : "not_configured",
+        store = settings.StoreKind switch { "postgres" => "postgres_durable", "memory" => "memory", _ => "sqlite_ephemeral" },
+        build = Environment.GetEnvironmentVariable("RENDER_GIT_COMMIT") ?? "local",
+        revenueProofRecovery = revenueProofs != null,
+        catalogProducts = ShorepopCatalog.ProductIds.Count,
+    }, statusCode: available ? 200 : 503);
+});
 app.MapPost("/v1/purchases/validate", async (NativePurchaseProof proof, HttpContext context, PurchaseService service, IPurchaseStore store) =>
 {
     string player = context.User.FindFirst("sub")!.Value;
@@ -180,6 +196,29 @@ app.MapPost("/v1/purchases/ack", (AckRequest request, HttpContext context, Purch
 app.MapPost("/v1/purchases/reconcile", async (ReconcileRequest request, HttpContext context, PurchaseService service) =>
     Results.Json(await service.ReconcileAsync(context.User.FindFirst("sub")!.Value, request, context.RequestAborted)))
     .RequireAuthorization().RequireRateLimiting("player");
+
+app.MapPost("/v1/privacy/revenue-proofs/erase", (PrivacyScopeRequest request, HttpContext context) =>
+{
+    if (revenueProofs == null) throw new VerifierRefusal(503, "privacy_storage_unavailable");
+    var result = revenueProofs.EraseForPlayer(context.User.FindFirst("sub")!.Value,
+        request.Store ?? "", request.ApplicationId ?? "", DateTimeOffset.UtcNow);
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.Json(new { result.ClearedProofCount, result.AlreadySuppressed, result.SuppressedAtUnixMs,
+        SettlementRecordsRetained = true });
+}).RequireAuthorization().RequireRateLimiting("player");
+
+app.MapPost("/v1/privacy/account-deletion", (PrivacyScopeRequest request, HttpContext context) =>
+{
+    if (revenueProofs == null) throw new VerifierRefusal(503, "privacy_storage_unavailable");
+    string playerId = context.User.FindFirst("sub")!.Value;
+    var result = revenueProofs.RequestAccountDeletion(playerId,
+        request.Store ?? "", request.ApplicationId ?? "", request.AnalyticsInstallId, DateTimeOffset.UtcNow,
+        request.FirebaseAppInstanceId);
+    context.Response.Headers.CacheControl = "no-store";
+    // Acceptance is durable initiation, not a claim that every provider has completed erasure.
+    return Results.Json(new { result.RequestId, result.Status, result.RequestedAtUnixMs,
+        SettlementRecordsRetained = true, PlayerId = playerId, request.Store, request.ApplicationId });
+}).RequireAuthorization().RequireRateLimiting("player");
 app.Run();
 
 public partial class Program;
