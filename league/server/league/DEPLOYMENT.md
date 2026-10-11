@@ -44,7 +44,7 @@ dotnet run --project tests/league-server/LeagueServerChecks.csproj -c Release --
 dotnet publish server/league/Shorepop.League.csproj -c Release -o <output-dir> -p:RestoreLockedMode=true
 ```
 
-Set `SHOREPOP_LEAGUE_TEST_POSTGRES` privately to run the durable integration suite. It refuses any
+Set `SHOREPOP_LEAGUE_TEST_POSTGRES=1` and supply `LeagueTestDatabaseUrl` privately to run the durable integration suite. It refuses any
 database except `shorepop_verifier_test` before writing. Live smoke uses real Unity identities only
 for authenticated empty readback and invalid-submission checks; it creates no production scores.
 The service remains subject to free hosting cold starts. Clients retain their durable outbox during

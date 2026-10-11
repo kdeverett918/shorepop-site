@@ -107,8 +107,8 @@
     },
     {
       "path": "server/league/LeagueDatabase.cs",
-      "sha256": "f90d5ff66c6565a8db7c2ab5a6f8ea9dcea325505e138b520316a82df3fa2b0e",
-      "sourceSha256": "f90d5ff66c6565a8db7c2ab5a6f8ea9dcea325505e138b520316a82df3fa2b0e"
+      "sha256": "7c6d3b76d34b159c902c3c0c5badf45d76d31133e7f563cbd2517bd723b753be",
+      "sourceSha256": "7c6d3b76d34b159c902c3c0c5badf45d76d31133e7f563cbd2517bd723b753be"
     },
     {
       "path": "server/league/LeagueOptions.cs",
@@ -162,8 +162,8 @@
     },
     {
       "path": "server/league/DEPLOYMENT.md",
-      "sha256": "127f2d98a5fb0859906f44c8e8900f6c26b15ee027b4085d8b84902fdfc6ddfd",
-      "sourceSha256": "127f2d98a5fb0859906f44c8e8900f6c26b15ee027b4085d8b84902fdfc6ddfd"
+      "sha256": "5c41b4afc1ba42532d19560089fff80a87af70a6bf65073663c72690a902e991",
+      "sourceSha256": "5c41b4afc1ba42532d19560089fff80a87af70a6bf65073663c72690a902e991"
     },
     {
       "path": "server/league/README.md",
@@ -187,8 +187,8 @@
     },
     {
       "path": "tests/league-server/Program.cs",
-      "sha256": "abc07c30afec936d2a120f0b564c8e7cfde52fda9e9f0b58b47ae613bd681ef0",
-      "sourceSha256": "abc07c30afec936d2a120f0b564c8e7cfde52fda9e9f0b58b47ae613bd681ef0"
+      "sha256": "e6723b542b27d4158b1da57b7f34040523440e13d8910eb7fb4f97322b2e824c",
+      "sourceSha256": "e6723b542b27d4158b1da57b7f34040523440e13d8910eb7fb4f97322b2e824c"
     },
     {
       "path": "tests/league-server/RecordHttpChecks.cs",

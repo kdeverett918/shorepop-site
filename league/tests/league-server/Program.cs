@@ -25,6 +25,20 @@ internal static partial class Program
         Directory.CreateDirectory(root);
         var fixture = Win(1);
         var other = Win(ReplayValidator.DefinitionForSlot(61).Id);
+        Test("PostgreSQL configuration defaults to verified TLS without disclosing supplied credentials", () =>
+        {
+            foreach (string value in new[] { "postgres://user:dummy@example.invalid/db", "Host=example.invalid;Database=db;Username=user;Password=dummy" })
+            {
+                var parsed = new Npgsql.NpgsqlConnectionStringBuilder(LeagueDatabase.NormalizeConnectionString(value));
+                Check(parsed.SslMode == Npgsql.SslMode.VerifyFull && parsed.MaxPoolSize == 4 && !parsed.IncludeErrorDetail && !parsed.PersistSecurityInfo);
+            }
+            var explicitMode = new Npgsql.NpgsqlConnectionStringBuilder(LeagueDatabase.NormalizeConnectionString("Host=localhost;Database=test;Username=user;Password=dummy;SSL Mode=Disable"));
+            Check(explicitMode.SslMode == Npgsql.SslMode.Disable);
+            bool refused = false;
+            try { LeagueDatabase.NormalizeConnectionString("postgres://user:private-marker@example.invalid/db?unsupported=private-marker"); }
+            catch (ArgumentException error) { refused = !error.ToString().Contains("private-marker"); }
+            Check(refused);
+        });
         Test("unconfigured and owner decision gates", () =>
         {
             Refuse(503, () => new LeagueRepository(new()).Submit("player", fixture, Now));

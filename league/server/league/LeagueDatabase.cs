@@ -107,7 +107,7 @@ public static class LeagueDatabase
             else
             {
                 builder = new(value);
-                if (!builder.ContainsKey("SSL Mode")) builder.SslMode = SslMode.VerifyFull;
+                if (!builder.ShouldSerialize("SSL Mode")) builder.SslMode = SslMode.VerifyFull;
             }
             if (string.IsNullOrWhiteSpace(builder.Host) || string.IsNullOrWhiteSpace(builder.Database) || string.IsNullOrWhiteSpace(builder.Username)) throw new FormatException();
             builder.IncludeErrorDetail = false; builder.LogParameters = false; builder.PersistSecurityInfo = false;
