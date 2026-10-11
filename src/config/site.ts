@@ -2,13 +2,13 @@ export const siteConfig = {
   name: 'Shorepop',
   tagline: 'A fox, five coasts, one tap',
   description:
-    'Shorepop is a tap-to-blast puzzle game. Tap groups of matching pieces to hit each score target while a fox walks the coast you bring back to life. Coming soon to Google Play and the App Store.',
+    'Shorepop is a tap-to-blast puzzle game. Tap matching tiles, fire rocket combos and ride the Big Wave through 300 puzzles with a fox companion. Coming soon to Google Play and the App Store.',
   url: 'https://shorepop.com',
   email: 'hello@shorepop.com',
   appId: 'com.shorepop.game',
   ogImage: '/og-image.png',
-  owner: 'Kristine Everett',
-  policyDate: '2026-09-20',
+  owner: 'Dizzywalk Records LLC',
+  policyDate: '2026-10-11',
 } as const
 
 export const mailtoLaunch = `mailto:${siteConfig.email}?subject=${encodeURIComponent(

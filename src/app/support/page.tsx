@@ -16,7 +16,7 @@ const faq = [
   },
   {
     q: 'Where is my progress saved?',
-    a: 'On your device, in the app’s private storage. There is no account to make or Shorepop cloud-save service. Deleting the app removes its local progress; device-backup copies are managed through your Apple or Google settings.',
+    a: 'Progress is saved in the app’s private storage on your device. Shorepop does not provide a general cloud-save service. Versions with online services can also keep separate player, ranking and purchase records. Deleting the app removes local progress but does not automatically delete those online records. Device-backup copies are managed through your Apple or Google settings.',
   },
   {
     q: 'When does the daily tide reset?',
@@ -24,11 +24,19 @@ const faq = [
   },
   {
     q: 'Are there ads or purchases?',
-    a: 'No. The current version has no ads and no purchases.',
+    a: 'Advertising and optional in-app purchases are being introduced across releases. Availability depends on your platform and game version; some older test builds have neither. Available prices and purchase terms appear in the in-game store. Rewarded ads require an eligible completed ad to grant the displayed reward.',
   },
   {
     q: 'Does the game need a connection?',
-    a: 'No. You can play offline. Online rankings are unavailable in the current test release, so connecting to the internet will not enable them.',
+    a: 'You can play the core puzzles offline. Ads, purchases, purchase restoration, online rankings and other online services need a connection when they are available in your version.',
+  },
+  {
+    q: 'How do I get help with a purchase?',
+    a: 'Check that you are using the same Apple or Google account. Use Restore purchases in game Settings when that option is available. Contact us with your platform, game version and store order number if an item is missing. Do not send your password, full card details or raw receipt token. Manage subscriptions and refund requests through the store where you bought them; deleting the app does not cancel a subscription.',
+  },
+  {
+    q: 'How do I change privacy choices?',
+    a: 'Use Share stats in game Settings for analytics, diagnostics and campaign measurement, and Privacy choices when offered for advertising consent. Your device also provides advertising and tracking controls. These choices do not remove ads or prevent processing needed to fulfil a purchase. Available controls depend on your version and region.',
   },
 ]
 
@@ -58,17 +66,35 @@ export default function SupportPage() {
           ))}
         </dl>
 
-        <h2 className="text-navy mt-12 text-3xl font-semibold">Delete my data</h2>
+        <h2 id="delete-account" className="text-navy mt-12 text-3xl font-semibold">
+          Delete my account and data
+        </h2>
+        <p className="text-navy/90 mt-4 text-lg leading-relaxed">
+          If your version includes Delete account in Settings, choose it. Read the confirmation and
+          submit your request while connected to the internet. After it is accepted, local progress
+          is removed, your current player session ends and account and online-record deletion
+          begins. Remaining service cleanup may need support verification and processing; keep your
+          request identifier if you contact us. We will confirm when that cleanup is completed.
+          Deletion does not cancel a subscription: manage it through Apple or Google.
+        </p>
         <p className="text-navy/90 mt-4 text-lg leading-relaxed">
           Delete the app to remove local progress, settings and play records. On Android, you can
           also clear the app&apos;s data in its storage settings. Offloading on iOS keeps your data.
-          Manage any device-backup copies through your Apple or Google settings. Online rankings are
-          disabled in this release, and there is no game account to delete. For questions or to
-          request deletion of support emails, contact{' '}
-          <a href={mailtoSupport} className={linkClass}>
+          Manage any device-backup copies through your Apple or Google settings. This does not
+          automatically delete online records or cancel subscriptions. If you cannot access the
+          game, use an older release, or want to delete support emails, request deletion by
+          contacting{' '}
+          <a
+            href={`mailto:${siteConfig.email}?subject=Shorepop%20data%20deletion`}
+            className={linkClass}
+          >
             {siteConfig.email}
           </a>{' '}
-          — no game player ID is needed. The full details are in the{' '}
+          with the subject “Shorepop data deletion.” Include your platform and the records
+          concerned, plus a player identifier or store order number if you have one. We may need
+          more information to locate records and verify your request. Requests are handled through
+          support; some purchase or other records may be retained for verification, refunds,
+          security or legal obligations. The full details are in the{' '}
           <a href="/privacy" className={linkClass}>
             privacy policy
           </a>

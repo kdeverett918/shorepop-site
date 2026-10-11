@@ -6,18 +6,19 @@ import { mailtoLaunch } from '@/config/site'
 import { coasts } from '@/data/coasts'
 
 const features = [
-  '60 campaign puzzles across five coasts, each with a calibrated score target',
-  'A fox companion that walks the map between the levels you have earned',
-  'Five coasts with their own tile skins, lighting and scenery',
-  'Rockets, seed bombs, prism flowers and their combinations',
-  'Crates and ice that reward planning',
+  '300 campaign puzzles across five coasts',
+  'A fox companion that reacts to your moves and celebrates your wins',
+  'Win levels to bring color back to the coast',
+  'Rockets, bombs, prisms and their combinations',
+  'Crates, ice, shells, message bottles and sand to clear',
   'Three stars per level, earned by how far past the target you finish',
   'A bonus for every move you did not need',
   'A personal best per level, called out when you beat it',
   'Three lives shared across the game, one back every 20 minutes',
   'Undo, for as long as the puzzle is running',
   'A daily tide: one fresh puzzle each day, yesterday’s as a replay, a seven-stamp card, and no penalty for missing a day',
-  'Five harbor restoration projects',
+  'Spend stars to relight spots on the shore',
+  'A fishing break and a collection of catches',
   'Original music and sound, gentle motion, text size and haptics controls',
   'Saved progress on your device and play without a connection',
 ]
@@ -61,8 +62,8 @@ export default function HomePage() {
             </h1>
             <p className="text-navy/85 mt-6 text-lg leading-relaxed sm:text-xl">
               Tap groups of matching pieces to reach each level&apos;s score target before your
-              moves run out. A fox travels the coast with you, and your stars and coins bring a
-              small seaside harbor back to life.
+              moves run out. A fox travels the coast with you, and every win brings color back to
+              the shore.
             </p>
             <ComingSoon className="mt-8" />
           </div>
@@ -89,12 +90,12 @@ export default function HomePage() {
       <section aria-labelledby="coasts-heading" className="pt-16">
         <Container>
           <h2 id="coasts-heading" className="text-navy text-3xl font-semibold sm:text-4xl">
-            Five coasts, each in its own light.
+            From the coast sketchbook.
           </h2>
           <p className="text-navy/80 mt-3 max-w-2xl text-lg">
-            A sunlit cove, a glasshouse garden, a market at golden hour, islands above the clouds
-            and a lantern harbor at night. Each has its own tile set and scenery, and the fox waits
-            at the level you reached until you earn the next one.
+            Early coast artwork from Shorepop&apos;s development. These images and the preview
+            screens on this page show an earlier build; the current game has updated names, art and
+            controls. Follow the fox through 300 puzzles across five coasts.
           </p>
         </Container>
         <div className="coast-scroll mt-8 flex gap-4 overflow-x-auto px-5 pb-6 sm:px-8 xl:mx-auto xl:grid xl:max-w-[88rem] xl:grid-cols-5 xl:overflow-visible">
@@ -136,16 +137,17 @@ export default function HomePage() {
                 to your score at the end, so the move you finish on decides how many stars you keep.
               </p>
               <p>
-                Build rockets, seed bombs and prism flowers from clever matches, then set them off
-                together. Crates and ice change how you plan and pay off when you clear them. When
-                the board needs a fresh angle, hold Breeze and slide the pieces the way you want.
+                Build rockets, bombs and prisms from clever matches, then set them off together.
+                Crates and ice change how you plan and pay off when you clear them. When the board
+                needs a fresh angle, hold Breeze and slide the pieces the way you want.
               </p>
               <p>
-                Your stars and coins bring a small seaside harbor back to life, from a garden path
-                to a lighthouse and a glasshouse. Every project is earned by playing.
+                Every win splashes color back onto the next stretch of coast. Every ten levels,
+                spend stars to relight a new spot on the shore.
               </p>
               <p className="text-navy font-bold">
-                No ads interrupt a puzzle. This version has no ads and no purchases.
+                Advertising and optional in-app purchases are being introduced. Availability varies
+                by platform and game version.
               </p>
             </div>
           </div>
@@ -193,7 +195,7 @@ export default function HomePage() {
         <Container className="flex flex-col items-start gap-6 sm:flex-row sm:items-center sm:gap-10">
           <Image
             src="/img/icon-512.webp"
-            alt="The Shorepop app icon: a five-colour prism flower on a cream block, with a gold star and coral blocks behind it."
+            alt="The Shorepop app icon: a smiling orange fox on a sunny coast above the Shorepop name."
             width={128}
             height={128}
             className="shadow-lift rounded-[28px]"

@@ -12,7 +12,7 @@ export function GameJsonLd() {
     applicationCategory: 'Game',
     operatingSystem: 'Android, iOS',
     image: `${siteConfig.url}${siteConfig.ogImage}`,
-    author: { '@type': 'Person', name: siteConfig.owner },
+    author: { '@type': 'Organization', name: siteConfig.owner },
   }
   return (
     <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(data) }} />

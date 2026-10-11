@@ -21,9 +21,13 @@ const facts = [
   ['Developer', siteConfig.owner],
   ['Platforms', 'Android and iOS (coming soon)'],
   ['Genre', 'Puzzle, casual, single player, offline'],
-  ['Price', 'Free. This version has no ads and no purchases.'],
-  ['Age rating', '4+'],
-  ['App id', siteConfig.appId],
+  [
+    'Price',
+    'Free to download. Advertising and optional purchases are being introduced; availability varies by platform and version.',
+  ],
+  ['Age rating', 'See the rating displayed by your local app store'],
+  ['Android package', siteConfig.appId],
+  ['iOS bundle', 'com.dizzywalk.shorepop'],
   ['Contact', siteConfig.email],
 ]
 
@@ -35,12 +39,12 @@ export default function PressPage() {
         <p className="text-navy/90 mt-5 text-lg leading-relaxed">
           Shorepop is a tap-to-blast puzzle game for phones. You tap groups of matching pieces to
           reach each level&apos;s score target before your moves run out; bigger groups pay far
-          more, and every move you did not need is added to your score at the end. Rockets, seed
-          bombs and prism flowers come from clever matches, and crates and ice reward planning. A
-          fox travels the coast with you across five coasts, each with its own light, scenery and
-          tile set, and your stars and coins bring a small seaside harbor back to life. Sixty
-          campaign puzzles, a daily tide, three shared lives and saved progress on your device. This
-          version has no ads and no purchases.
+          more, and every move you did not need is added to your score at the end. Rockets, bombs
+          and prisms come from clever matches. Fill the shell gauge to send the Big Wave across the
+          bottom of the board. A fox accompanies you through 300 puzzles across five coasts, and
+          every win brings color back to the shore. Take on a daily puzzle or a fishing break, with
+          three shared lives and saved progress on your device. Advertising and optional in-app
+          purchases are being introduced, with availability varying by platform and game version.
         </p>
         <p className="text-navy/90 mt-4 text-lg">
           Press questions and review builds:{' '}
@@ -64,7 +68,7 @@ export default function PressPage() {
       <div className="mt-5 flex flex-wrap items-center gap-6">
         <Image
           src="/img/icon-512.webp"
-          alt="The Shorepop app icon: a five-colour prism flower on a cream block, with a gold star and coral blocks behind it, on harbor teal."
+          alt="The Shorepop app icon: a smiling orange fox, colorful sea glass and the Shorepop name on a sunny coast."
           width={160}
           height={160}
           className="shadow-lift rounded-[36px]"
@@ -83,10 +87,12 @@ export default function PressPage() {
         </ul>
       </div>
 
-      <h2 className="text-navy mt-14 text-3xl font-semibold">The five coasts</h2>
+      <h2 className="text-navy mt-14 text-3xl font-semibold">Early coast artwork</h2>
       <p className="text-navy/85 mt-3 max-w-2xl text-lg">
         Left to right: Arrival Cove, Glasshouse Garden, Sunset Market, Cloudfall Isles and Lantern
-        Harbor. Every coast is procedural art rendered from the game&apos;s own sources.
+        Harbor. These are earlier development names and procedural artwork, retained as a concept
+        archive. Current coast names are Arrival Cove, Candy Lagoon, Sunset Boardwalk, Paper Sky
+        Isles and Lantern Reef.
       </p>
       <figure className="shadow-lift mt-5 overflow-hidden rounded-2xl">
         <Image
@@ -113,10 +119,11 @@ export default function PressPage() {
         </li>
       </ul>
 
-      <h2 className="text-navy mt-14 text-3xl font-semibold">In-game screens</h2>
+      <h2 className="text-navy mt-14 text-3xl font-semibold">Earlier development screens</h2>
       <p className="text-navy/85 mt-3 max-w-2xl text-lg">
-        Captures from the current internal test build at 360 by 640. The home screen and the map at
-        each coast.
+        Historical captures at 360 by 640. These show the earlier home and map screens; current
+        releases use updated navigation, art and controls. They are not current-build marketing
+        masters.
       </p>
       <div className="mt-6 flex flex-wrap gap-6">
         <PhoneFrame
