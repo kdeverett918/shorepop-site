@@ -1,20 +1,20 @@
 import type { Metadata, Viewport } from 'next'
-import { Fredoka, Nunito } from 'next/font/google'
+import localFont from 'next/font/local'
 import { Footer } from '@/components/layout/footer'
 import { Header } from '@/components/layout/header'
 import { siteConfig } from '@/config/site'
 import './globals.css'
 
-const fredoka = Fredoka({
-  subsets: ['latin'],
-  weight: ['600', '700'],
+const fredoka = localFont({
+  src: './fonts/Fredoka.ttf',
+  weight: '300 700',
   display: 'swap',
   variable: '--font-fredoka',
 })
 
-const nunito = Nunito({
-  subsets: ['latin'],
-  weight: ['400', '700'],
+const nunito = localFont({
+  src: './fonts/Nunito.ttf',
+  weight: '200 1000',
   display: 'swap',
   variable: '--font-nunito',
 })

@@ -8,11 +8,11 @@ UGS access token and reads the responses below. It is deployed on Render as `sho
 
 ## Who a transaction belongs to
 
-| Product type | Products | Rule |
-|---|---|---|
-| Consumable | `gg.shorepop.gems.*`, `gg.shorepop.coins.*`, `lives.refill`, `abilities.bundle`, `welcome`, `shellbank` | **Single owner.** The first player to validate owns it; others get 409 `transaction_owned_by_another_player`. Apple only: while the owner has **not acked** (`POST /v1/purchases/ack`), ownership may move: to the token-matched player at any time, to anyone 24 h after the last claim. Once acked it never moves. Google consumables never move. |
-| Non-consumable | `gg.shorepop.noads`, `gg.shorepop.starter` | **Follows the store account, bounded.** Up to 5 distinct players per original transaction (`claimant_limit_reached` beyond). If the verified JWS carries an `appAccountToken`, a new player must match it or present a restore. |
-| Subscription | `gg.shorepop.pass.monthly` | Same as non-consumable; renewals share the original transaction's claimant set and cap. |
+| Product type   | Products                                                                                                | Rule                                                                                                                                                                                                                                                                                                                                                |
+| -------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Consumable     | `gg.shorepop.gems.*`, `gg.shorepop.coins.*`, `lives.refill`, `abilities.bundle`, `welcome`, `shellbank` | **Single owner.** The first player to validate owns it; others get 409 `transaction_owned_by_another_player`. Apple only: while the owner has **not acked** (`POST /v1/purchases/ack`), ownership may move: to the token-matched player at any time, to anyone 24 h after the last claim. Once acked it never moves. Google consumables never move. |
+| Non-consumable | `gg.shorepop.noads`, `gg.shorepop.starter`                                                              | **Follows the store account, bounded.** Up to 5 distinct players per original transaction (`claimant_limit_reached` beyond). If the verified JWS carries an `appAccountToken`, a new player must match it or present a restore.                                                                                                                     |
+| Subscription   | `gg.shorepop.pass.monthly`                                                                              | Same as non-consumable; renewals share the original transaction's claimant set and cap.                                                                                                                                                                                                                                                             |
 
 ### appAccountToken
 
@@ -78,30 +78,31 @@ exactly like the league server validates it: Unity JWKS, issuer `https://player-
 RS256, lifetime, one `sub`, and `project_id == UGS_PROJECT_ID`. The `sub` claim is the player. JSON input
 is case-insensitive. Output uses the client's PascalCase field names so Unity's `JsonUtility` can read it.
 
-| Route | Body | 200 response |
-|---|---|---|
-| `POST /v1/purchases/validate` | `NativePurchaseProof` | one `ValidatedNativePurchase` |
-| `POST /v1/purchases/ack` | `{"TransactionId":"..."}` (optional `Store`, default `AppleAppStore`; optional `ApplicationId`, must be `com.shorepop.game`) | `{"TransactionId":"...","Acked":true}`; idempotent, first ack time kept |
-| `POST /v1/purchases/reconcile` | `{"Store":"AppleAppStore"\|"GooglePlay","ApplicationId":"com.shorepop.game"}` | `ValidatedNativePurchase[]`, all of this player's known transactions (an empty array is an authoritative "none") |
-| `GET /healthz` | none | `{status, apple, appleServerApi, google, store}` |
+| Route                          | Body                                                                                                                         | 200 response                                                                                                     |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/purchases/validate`  | `NativePurchaseProof`                                                                                                        | one `ValidatedNativePurchase`                                                                                    |
+| `POST /v1/purchases/ack`       | `{"TransactionId":"..."}` (optional `Store`, default `AppleAppStore`; optional `ApplicationId`, must be `com.shorepop.game`) | `{"TransactionId":"...","Acked":true}`; idempotent, first ack time kept                                          |
+| `POST /v1/purchases/reconcile` | `{"Store":"AppleAppStore"\|"GooglePlay","ApplicationId":"com.shorepop.game"}`                                                | `ValidatedNativePurchase[]`, all of this player's known transactions (an empty array is an authoritative "none") |
+| `GET /healthz`                 | none                                                                                                                         | `{status, apple, appleServerApi, google, store}`                                                                 |
 
 Errors are returned as `{"Code":"..."}`:
 
-| Status | Codes |
-|---|---|
-| 400 | `malformed_json`, `body_required` |
-| 401 | `authentication_required` |
-| 404 | `transaction_not_found` (ack for a transaction the verifier has not seen) |
-| 409 | `transaction_owned_by_another_player` (consumable owned by another player; also ack by a non-claimant), `app_account_token_mismatch` (token-bound entitlement, no restore proof), `claimant_limit_reached` (6th player on one entitlement), `purchase_pending` (Google) |
-| 422 | `unknown_store`, `application_mismatch`, `unknown_product`, `transaction_missing`, `apple_signed_transaction_required`, `apple_signature_invalid`, `bundle_mismatch`, `product_mismatch`, `transaction_mismatch`, `quantity_not_one`, `environment_not_allowed`, `type_mismatch`, `expiry_missing`, `purchase_not_found`, `line_items_invalid`, `purchase_state_unknown` |
-| 429 | Rate limit: 20 requests per minute per player, 32 concurrent requests per server |
-| 503 | `verifier_unconfigured`, `google_validation_not_configured`, `authentication_keys_unavailable`, `apple_server_api_unavailable`, `apple_server_response_unverifiable`, `storage_unavailable`, `stored_transaction_unverifiable` |
+| Status | Codes                                                                                                                                                                                                                                                                                                                                                                    |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 400    | `malformed_json`, `body_required`                                                                                                                                                                                                                                                                                                                                        |
+| 401    | `authentication_required`                                                                                                                                                                                                                                                                                                                                                |
+| 404    | `transaction_not_found` (ack for a transaction the verifier has not seen)                                                                                                                                                                                                                                                                                                |
+| 409    | `transaction_owned_by_another_player` (consumable owned by another player; also ack by a non-claimant), `app_account_token_mismatch` (token-bound entitlement, no restore proof), `claimant_limit_reached` (6th player on one entitlement), `purchase_pending` (Google)                                                                                                  |
+| 422    | `unknown_store`, `application_mismatch`, `unknown_product`, `transaction_missing`, `apple_signed_transaction_required`, `apple_signature_invalid`, `bundle_mismatch`, `product_mismatch`, `transaction_mismatch`, `quantity_not_one`, `environment_not_allowed`, `type_mismatch`, `expiry_missing`, `purchase_not_found`, `line_items_invalid`, `purchase_state_unknown` |
+| 429    | Rate limit: 20 requests per minute per player, 32 concurrent requests per server                                                                                                                                                                                                                                                                                         |
+| 503    | `verifier_unconfigured`, `google_validation_not_configured`, `authentication_keys_unavailable`, `apple_server_api_unavailable`, `apple_server_response_unverifiable`, `storage_unavailable`, `stored_transaction_unverifiable`                                                                                                                                           |
 
 ## What each store check proves
 
 **Apple (StoreKit 2).** The service verifies `AppleSignedTransaction` (a JWS) as follows:
+
 - The header must say `alg: ES256` and carry exactly three `x5c` certificates.
-- The leaf must be signed by the intermediate, and the intermediate by a *configured* root. That root is
+- The leaf must be signed by the intermediate, and the intermediate by a _configured_ root. That root is
   the Apple Root CA - G3 embedded from `Resources/AppleRootCA-G3.cer` (SHA-256
   `63343ABF…3E9179`, byte-identical to the real root in Apple's own library tests). The presented
   `x5c[2]` is parsed but never trusted.
@@ -121,6 +122,7 @@ OCSP revocation of Apple's signing certificates is **not** checked. Apple's libr
 
 **Google Play.** Purchases are checked with `purchases.productsv2.getproductpurchasev2` or
 `purchases.subscriptionsv2.get`, authenticated with the service account in `GOOGLE_PLAY_SA_JSON`.
+
 - If `GOOGLE_PLAY_SA_JSON` is unset, every Google request answers **503
   `google_validation_not_configured`** (fail closed). Play stays blocked until the app transfer completes.
 - One-time products: `PURCHASED` is accepted, `CANCELLED` is returned with `Refunded=true`, and
@@ -144,6 +146,7 @@ aggregate changes. Both come from the store.
     `originalTransactionId` for the same player.
 
   Every response JWS goes through the same chain verification as client proofs.
+
 - **Without** those keys, reconcile re-verifies each stored signed transaction (at its own `signedDate`)
   and returns the stored state. A refund made after the purchase stays invisible until the key is set.
   App Store Server Notifications V2 are not implemented yet.
@@ -153,10 +156,10 @@ aggregate changes. Both come from the store.
 
 `IPurchaseStore` has two implementations:
 
-| Store | Setting | Notes |
-|---|---|---|
+| Store            | Setting                                                          | Notes                  |
+| ---------------- | ---------------------------------------------------------------- | ---------------------- |
 | SQLite (default) | file at `VERIFIER_DB_PATH`, default `/home/app/data/verifier.db` | See the warning below. |
-| In memory | `VERIFIER_STORE=memory` | Lost on every restart. |
+| In memory        | `VERIFIER_STORE=memory`                                          | Lost on every restart. |
 
 **Persistence limit on the free plan.** The service runs on Render's free plan, where the container disk
 is ephemeral: the SQLite file is wiped on every deploy and every restart (including idle spin-downs). That
@@ -166,6 +169,7 @@ also forgotten until reconcile re-queries Apple or Google. Entitlements are not 
 re-presents the signed transaction.
 
 **Before real revenue, move to one of these:**
+
 - a paid Render instance with a persistent disk mounted at `/home/app/data` (the default `VERIFIER_DB_PATH`), or
 - a Postgres store (`DATABASE_URL`). `IPurchaseStore` is ready for it, but that store is not implemented yet.
 
@@ -175,16 +179,16 @@ only a 12-hex SHA-256 digest. No CORS middleware is registered.
 
 ## Environment
 
-| Variable | Required | Meaning |
-|---|---|---|
-| `UGS_PROJECT_ID` | yes | UGS project id. `/v1` answers 503 until it is set. |
-| `APP_BUNDLE_ID` | no | Must be `com.shorepop.game`, which is the default. |
-| `APPLE_ALLOWED_ENVIRONMENTS` | no | Default `Production,Sandbox`. |
-| `GOOGLE_PLAY_SA_JSON` | no | Service-account key JSON text. Unset means Google answers 503. |
-| `APPLE_IAP_KEY_ID`, `APPLE_IAP_ISSUER_ID`, `APPLE_IAP_PRIVATE_KEY` | no | App Store Server API credentials. |
-| `VERIFIER_STORE` | no | `sqlite` (default) or `memory`. |
-| `VERIFIER_DB_PATH` | no | SQLite file path. |
-| `PORT` | no | Set by Render. |
+| Variable                                                           | Required | Meaning                                                        |
+| ------------------------------------------------------------------ | -------- | -------------------------------------------------------------- |
+| `UGS_PROJECT_ID`                                                   | yes      | UGS project id. `/v1` answers 503 until it is set.             |
+| `APP_BUNDLE_ID`                                                    | no       | Must be `com.shorepop.game`, which is the default.             |
+| `APPLE_ALLOWED_ENVIRONMENTS`                                       | no       | Default `Production,Sandbox`.                                  |
+| `GOOGLE_PLAY_SA_JSON`                                              | no       | Service-account key JSON text. Unset means Google answers 503. |
+| `APPLE_IAP_KEY_ID`, `APPLE_IAP_ISSUER_ID`, `APPLE_IAP_PRIVATE_KEY` | no       | App Store Server API credentials.                              |
+| `VERIFIER_STORE`                                                   | no       | `sqlite` (default) or `memory`.                                |
+| `VERIFIER_DB_PATH`                                                 | no       | SQLite file path.                                              |
+| `PORT`                                                             | no       | Set by Render.                                                 |
 
 ## Build and test
 
@@ -194,6 +198,7 @@ dotnet run --project server/verifier/tests/Shorepop.Verifier.Tests.csproj -c Rel
 ```
 
 The tests use two sets of vectors:
+
 - Apple's MIT-licensed vectors from `app-store-server-library-python`, under
   `tests/Resources/apple-library`. They include Apple's test root, which is used only in tests.
 - A locally generated chain with Apple's certificate shape.

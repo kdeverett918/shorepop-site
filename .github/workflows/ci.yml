@@ -47,4 +47,22 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run build
+      - name: Build static site
+        id: build
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee build.log
+      - name: Report build failure
+        if: failure() && steps.build.outcome == 'failure'
+        shell: bash
+        run: |
+          echo '::error title=Next.js build failed::See the Build static site step and next-build-log artifact for the complete error. Fonts are bundled in src/app/fonts; no Google Fonts download is required.'
+          printf '### Next.js build failed\n\nSee the **Build static site** step and **next-build-log** artifact for full diagnostics. Fonts are bundled in `src/app/fonts`.\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve build diagnostics
+        if: failure() && steps.build.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: next-build-log
+          path: build.log
+          retention-days: 7
