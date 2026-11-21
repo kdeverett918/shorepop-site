@@ -9,7 +9,7 @@ public sealed record PurchaseRecord(
     bool Refunded, long PurchasedPeriodExpiryUtcTicks, string? OriginalRef, string? SignedPayload, long SignedDateUnixMs,
     bool RevenueVerified = false, long GrossRevenueMicros = 0, string RevenueCurrency = "",
     string RevenueTransactionId = "", long RevenuePurchasedAtUnixMs = 0, bool RevenueRefunded = false,
-    string RefundedRevenueOrderIdsJson = "[]");
+    string RefundedRevenueOrderIdsJson = "[]", bool TestOrder = false);
 
 /// <summary>One player's claim on one transaction.</summary>
 public sealed record ClaimInfo(string PlayerId, DateTimeOffset BoundUtc, DateTimeOffset? AckedUtc);
@@ -43,7 +43,6 @@ public enum AckOutcome { Acked, NotFound, NotClaimant }
 /// One row per (store, applicationId, transactionId) holds the store's state (refunds sticky); a separate claim
 /// set records every player that holds it, with when it was bound and whether the client acked a durable grant.
 /// Who may claim is decided by the caller's policy (see <see cref="PurchaseService"/>); the store only applies it.
-/// A Postgres implementation (env DATABASE_URL) would slot in here; only SQLite and memory ship today.
 /// </summary>
 public interface IPurchaseStore
 {
@@ -61,6 +60,19 @@ public interface IPurchaseStore
     IReadOnlyList<TransferRecord> Transfers(string store, string applicationId, string transactionId);
     /// <summary>Recomputes the player's aggregate subscription expiry; the revision increases whenever it changes.</summary>
     (long Revision, long CurrentExpiryUtcTicks) Subscription(string playerId, string store, string applicationId);
+
+    /// <summary>Records a pending subscription revenue charge bound to its originating install id (WO-20261113-653).</summary>
+    void UpsertSubscriptionRevenueCharge(SubscriptionRevenueCharge charge);
+    SubscriptionRevenueCharge? GetSubscriptionRevenueCharge(string store, string applicationId, string revenueOrderId);
+    /// <summary>Returns unconfirmed charges eligible for this player + installId; anonymous offers happen at most once.</summary>
+    IReadOnlyList<SubscriptionRevenueCharge> ClaimPendingSubscriptionRevenueCharges(string playerId, string store, string applicationId, string? installId);
+    /// <summary>Confirms or retries a pending subscription revenue charge strictly for its owning install id.</summary>
+    SubscriptionRevenueConfirmResult ConfirmSubscriptionRevenueCharge(string playerId, string store, string applicationId, string revenueOrderId, string? installId, DateTimeOffset now);
+    /// <summary>Authorizes serving a subscription revenue proof to this player + installId.</summary>
+    bool TryAuthorizeSubscriptionProofOffer(string playerId, string store, string applicationId, string revenueOrderId, string? installId);
+
+    /// <summary>Row/size metrics for growing-bound warnings (WO-20261118-396).</summary>
+    StoreStorageMetrics GetStorageMetrics();
     string Kind { get; }
 }
 
@@ -78,18 +90,51 @@ public static class PurchaseStoreExtensions
 
 internal static class StoreRules
 {
-    /// <summary>Refunds are sticky; expiry and payload follow the most recently signed evidence.</summary>
+    /// <summary>
+    /// Deterministic order comparison between two distinct economic orders on the same transaction/token:
+    /// signed observation time first, then purchase settlement time, then ordinal order id tiebreak
+    /// so same-timestamp refund + replacement never depends on arrival order (WO-20261118-899).
+    /// </summary>
+    public static bool IsNewerEconomicOrder(PurchaseRecord existing, PurchaseRecord incoming)
+    {
+        if (incoming.SignedDateUnixMs != existing.SignedDateUnixMs)
+            return incoming.SignedDateUnixMs > existing.SignedDateUnixMs;
+        if (incoming.RevenuePurchasedAtUnixMs != existing.RevenuePurchasedAtUnixMs)
+            return incoming.RevenuePurchasedAtUnixMs > existing.RevenuePurchasedAtUnixMs;
+        return StringComparer.Ordinal.Compare(incoming.RevenueTransactionId, existing.RevenueTransactionId) > 0;
+    }
+
+    /// <summary>Refunds are sticky per transaction/order; expiry and payload follow the most recently signed evidence.</summary>
     public static PurchaseRecord Merge(PurchaseRecord existing, PurchaseRecord incoming)
     {
         bool newer = incoming.SignedDateUnixMs >= existing.SignedDateUnixMs;
+        bool testOrder = existing.TestOrder || incoming.TestOrder;
+        if (testOrder)
+        {
+            return existing with
+            {
+                Refunded = existing.Refunded || incoming.Refunded,
+                PurchasedPeriodExpiryUtcTicks = newer ? incoming.PurchasedPeriodExpiryUtcTicks : existing.PurchasedPeriodExpiryUtcTicks,
+                SignedPayload = newer && incoming.SignedPayload != null ? incoming.SignedPayload : existing.SignedPayload,
+                SignedDateUnixMs = Math.Max(existing.SignedDateUnixMs, incoming.SignedDateUnixMs),
+                Environment = incoming.Environment,
+                OriginalRef = incoming.OriginalRef ?? existing.OriginalRef,
+                RevenueVerified = false,
+                GrossRevenueMicros = 0,
+                RevenueCurrency = "",
+                RevenueTransactionId = "",
+                RevenuePurchasedAtUnixMs = 0,
+                RevenueRefunded = false,
+                RefundedRevenueOrderIdsJson = "[]",
+                TestOrder = true,
+            };
+        }
         // Reconciliation may temporarily lack order economics. Keep previously verified economics,
         // and never let an older Google renewal overwrite a newer order on the same purchase token.
         bool incomingRevenueKnown = incoming.RevenueTransactionId.Length > 0;
         bool existingRevenueKnown = existing.RevenueTransactionId.Length > 0;
         bool sameRevenueOrder = incomingRevenueKnown && existingRevenueKnown && incoming.RevenueTransactionId == existing.RevenueTransactionId;
-        bool newerEconomicOrder = incomingRevenueKnown && (!existingRevenueKnown ||
-            (incoming.SignedDateUnixMs > 0 || existing.SignedDateUnixMs > 0 ? newer
-                : incoming.RevenuePurchasedAtUnixMs >= existing.RevenuePurchasedAtUnixMs));
+        bool newerEconomicOrder = incomingRevenueKnown && (!existingRevenueKnown || IsNewerEconomicOrder(existing, incoming));
         // A new verified order identity must clear the old order's price even when its own price
         // lookup is unavailable. Same-order price failures keep the previously verified economics.
         bool takeRevenueValues = !sameRevenueOrder ? newerEconomicOrder
@@ -108,10 +153,11 @@ internal static class StoreRules
             RevenueVerified = takeRevenueValues ? incoming.RevenueVerified : existing.RevenueVerified,
             GrossRevenueMicros = takeRevenueValues ? incoming.GrossRevenueMicros : existing.GrossRevenueMicros,
             RevenueCurrency = takeRevenueValues ? incoming.RevenueCurrency : existing.RevenueCurrency,
-            RevenueTransactionId = takeRevenueValues ? incoming.RevenueTransactionId : existing.RevenueTransactionId,
+            RevenueTransactionId = selectedRevenueOrder,
             RevenuePurchasedAtUnixMs = takeRevenueValues ? incoming.RevenuePurchasedAtUnixMs : existing.RevenuePurchasedAtUnixMs,
-            RevenueRefunded = refundedRevenueOrders.Contains(selectedRevenueOrder),
+            RevenueRefunded = selectedRevenueOrder.Length > 0 && refundedRevenueOrders.Contains(selectedRevenueOrder),
             RefundedRevenueOrderIdsJson = JsonSerializer.Serialize(refundedRevenueOrders.Order(StringComparer.Ordinal)),
+            TestOrder = false,
         };
     }
 
@@ -122,7 +168,14 @@ internal static class StoreRules
         return ids;
     }
 
+    /// <summary>
+    /// Orders rows deterministically by (SignedDateUnixMs, TransactionId) and computes aggregate active
+    /// subscription expiry so a refunded transaction never cancels a distinct replacement transaction
+    /// sharing the identical timestamp (WO-20261118-899).
+    /// </summary>
     public static long Aggregate(IEnumerable<PurchaseRecord> rows) => rows
+        .OrderBy(r => r.SignedDateUnixMs)
+        .ThenBy(r => r.TransactionId, StringComparer.Ordinal)
         .Where(r => ShorepopCatalog.IsSubscription(r.ProductId) && !r.Refunded)
         .Select(r => r.PurchasedPeriodExpiryUtcTicks).DefaultIfEmpty(0).Max();
 }
@@ -142,6 +195,7 @@ public sealed class InMemoryPurchaseStore : IPurchaseStore
     private readonly Dictionary<(string, string, string), List<Claim>> claims = new();
     private readonly Dictionary<(string, string, string), List<TransferRecord>> transfers = new();
     private readonly Dictionary<(string, string, string), (long, long)> subscriptions = new();
+    private readonly Dictionary<(string, string, string), SubscriptionRevenueCharge> subRevenueCharges = new();
     public string Kind => "memory";
 
     public BindResult Bind(PurchaseRecord record, DateTimeOffset now, Func<ClaimContext, ClaimDecision> decide)
@@ -217,22 +271,104 @@ public sealed class InMemoryPurchaseStore : IPurchaseStore
             return state;
         }
     }
+
+    public void UpsertSubscriptionRevenueCharge(SubscriptionRevenueCharge charge)
+    {
+        lock (gate)
+        {
+            var key = (charge.Store, charge.ApplicationId, charge.RevenueOrderId);
+            if (!subRevenueCharges.ContainsKey(key)) subRevenueCharges[key] = charge;
+        }
+    }
+
+    public SubscriptionRevenueCharge? GetSubscriptionRevenueCharge(string store, string applicationId, string revenueOrderId)
+    {
+        lock (gate) return subRevenueCharges.TryGetValue((store, applicationId, revenueOrderId), out var c) ? c : null;
+    }
+
+    public IReadOnlyList<SubscriptionRevenueCharge> ClaimPendingSubscriptionRevenueCharges(string playerId, string store, string applicationId, string? installId)
+    {
+        lock (gate)
+        {
+            var result = new List<SubscriptionRevenueCharge>();
+            foreach (var key in subRevenueCharges.Keys.OrderBy(k => k.Item3, StringComparer.Ordinal).ToList())
+            {
+                var c = subRevenueCharges[key];
+                if (c.Store != store || c.ApplicationId != applicationId || c.PlayerId != playerId || c.Confirmed) continue;
+                if (c.OwningInstallId != null)
+                {
+                    if (installId != null && installId == c.OwningInstallId) result.Add(c);
+                }
+                else if (!c.OfferedToAnonymous)
+                {
+                    var updated = c with { OfferedToAnonymous = true };
+                    subRevenueCharges[key] = updated;
+                    result.Add(updated);
+                }
+            }
+            return result;
+        }
+    }
+
+    public SubscriptionRevenueConfirmResult ConfirmSubscriptionRevenueCharge(string playerId, string store, string applicationId, string revenueOrderId, string? installId, DateTimeOffset now)
+    {
+        lock (gate)
+        {
+            var key = (store, applicationId, revenueOrderId);
+            if (!subRevenueCharges.TryGetValue(key, out var c) || c.PlayerId != playerId)
+                throw new VerifierRefusal(404, "transaction_not_found");
+            if (c.OwningInstallId != null)
+            {
+                if (installId == null || installId != c.OwningInstallId)
+                    return new SubscriptionRevenueConfirmResult { RevenueOrderId = revenueOrderId, Accepted = false, Deliver = false, Status = "ignored_install_mismatch" };
+                if (c.Confirmed)
+                    return new SubscriptionRevenueConfirmResult { RevenueOrderId = revenueOrderId, Accepted = true, Deliver = false, Status = "already_confirmed" };
+                subRevenueCharges[key] = c with { Confirmed = true, ConfirmedUtcMs = now.ToUnixTimeMilliseconds() };
+                return new SubscriptionRevenueConfirmResult { RevenueOrderId = revenueOrderId, Accepted = true, Deliver = true, Status = "confirmed" };
+            }
+            if (c.Confirmed)
+                return new SubscriptionRevenueConfirmResult { RevenueOrderId = revenueOrderId, Accepted = false, Deliver = false, Status = "already_confirmed" };
+            subRevenueCharges[key] = c with { Confirmed = true, OfferedToAnonymous = true, ConfirmedUtcMs = now.ToUnixTimeMilliseconds() };
+            return new SubscriptionRevenueConfirmResult { RevenueOrderId = revenueOrderId, Accepted = true, Deliver = true, Status = "confirmed" };
+        }
+    }
+
+    public bool TryAuthorizeSubscriptionProofOffer(string playerId, string store, string applicationId, string revenueOrderId, string? installId)
+    {
+        lock (gate)
+        {
+            var key = (store, applicationId, revenueOrderId);
+            if (!subRevenueCharges.TryGetValue(key, out var c)) return true;
+            if (c.PlayerId != playerId) return false;
+            if (c.OwningInstallId != null) return installId != null && installId == c.OwningInstallId;
+            if (c.Confirmed || c.OfferedToAnonymous) return false;
+            subRevenueCharges[key] = c with { OfferedToAnonymous = true };
+            return true;
+        }
+    }
+
+    public StoreStorageMetrics GetStorageMetrics()
+    {
+        lock (gate) return new StoreStorageMetrics(rows.Count, 0);
+    }
 }
 
 /// <summary>
 /// SQLite on the container disk. On Render's free plan the disk is ephemeral: the file (and therefore
-/// every transaction-to-player claim) resets on each deploy/restart. Attach a persistent disk
-/// (paid plan) or implement the Postgres store before real revenue depends on replay protection.
+/// every transaction-to-player claim) resets on each deploy/restart. Use PostgreSQL or a paid always-on
+/// Render instance before real revenue depends on replay protection.
 /// </summary>
 public sealed class SqlitePurchaseStore : IPurchaseStore
 {
+    private readonly string databasePath;
     private readonly string connectionString;
     private readonly object gate = new();
     public string Kind => "sqlite";
 
     public SqlitePurchaseStore(string path)
     {
-        string? directory = Path.GetDirectoryName(Path.GetFullPath(path));
+        databasePath = Path.GetFullPath(path);
+        string? directory = Path.GetDirectoryName(databasePath);
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
         connectionString = new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false }.ToString();
         using var connection = Open();
@@ -261,6 +397,13 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
               store TEXT NOT NULL, app_id TEXT NOT NULL, transaction_id TEXT NOT NULL,
               from_player TEXT NOT NULL, to_player TEXT NOT NULL, reason TEXT NOT NULL, created_utc TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS purchases_original ON purchases(store, app_id, original_ref);
+            CREATE TABLE IF NOT EXISTS subscription_revenue_charges(
+              store TEXT NOT NULL, app_id TEXT NOT NULL, revenue_order_id TEXT NOT NULL,
+              transaction_id TEXT NOT NULL, player_id TEXT NOT NULL, owning_install_id TEXT NULL,
+              confirmed INTEGER NOT NULL DEFAULT 0, offered_anonymous INTEGER NOT NULL DEFAULT 0,
+              created_ms INTEGER NOT NULL, confirmed_ms INTEGER NULL,
+              PRIMARY KEY(store, app_id, revenue_order_id));
+            CREATE INDEX IF NOT EXISTS sub_rev_charges_player ON subscription_revenue_charges(player_id, store, app_id);
             """);
         // Migration: claims gained an ack timestamp (a client-confirmed durable grant).
         using (var info = connection.CreateCommand())
@@ -278,6 +421,7 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
             ("revenue_purchased_at_ms", "INTEGER NOT NULL DEFAULT 0"),
             ("revenue_refunded", "INTEGER NOT NULL DEFAULT 0"),
             ("refunded_revenue_order_ids_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("test_order", "INTEGER NOT NULL DEFAULT 0"),
         })
         {
             using var info = connection.CreateCommand();
@@ -285,6 +429,19 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
             info.Parameters.AddWithValue("$name", name);
             if (Convert.ToInt64(info.ExecuteScalar()) == 0)
                 Execute(connection, null, $"ALTER TABLE purchases ADD COLUMN {name} {definition};");
+        }
+    }
+
+    public void CheckReadiness()
+    {
+        lock (gate)
+        {
+            using var connection = Open();
+            Execute(connection, null, """
+                SELECT 1 FROM purchases WHERE 0;
+                SELECT 1 FROM claims WHERE 0;
+                SELECT 1 FROM subscriptions WHERE 0;
+                """);
         }
     }
 
@@ -337,12 +494,12 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
             Execute(connection, tx, """
                 INSERT INTO purchases(store, app_id, transaction_id, player_id, product_id, environment, refunded, expiry_ticks,
                   original_ref, signed_payload, signed_date_ms, created_utc, updated_utc,
-                  revenue_verified, gross_revenue_micros, revenue_currency, revenue_transaction_id, revenue_purchased_at_ms, revenue_refunded, refunded_revenue_order_ids_json)
-                VALUES($s,$a,$t,$p,$prod,$env,$ref,$exp,$orig,$payload,$sd,$now,$now,$rv,$gross,$cur,$rt,$rp,$rr,$rh)
+                  revenue_verified, gross_revenue_micros, revenue_currency, revenue_transaction_id, revenue_purchased_at_ms, revenue_refunded, refunded_revenue_order_ids_json, test_order)
+                VALUES($s,$a,$t,$p,$prod,$env,$ref,$exp,$orig,$payload,$sd,$now,$now,$rv,$gross,$cur,$rt,$rp,$rr,$rh,$to)
                 ON CONFLICT(store, app_id, transaction_id) DO UPDATE SET environment=$env, refunded=$ref, expiry_ticks=$exp,
                   original_ref=$orig, signed_payload=$payload, signed_date_ms=$sd, updated_utc=$now,
                   revenue_verified=$rv, gross_revenue_micros=$gross, revenue_currency=$cur,
-                  revenue_transaction_id=$rt, revenue_purchased_at_ms=$rp, revenue_refunded=$rr, refunded_revenue_order_ids_json=$rh
+                  revenue_transaction_id=$rt, revenue_purchased_at_ms=$rp, revenue_refunded=$rr, refunded_revenue_order_ids_json=$rh, test_order=$to
                 """,
                 ("$s", row.Store), ("$a", row.ApplicationId), ("$t", row.TransactionId), ("$p", row.PlayerId), ("$prod", row.ProductId),
                 ("$env", row.Environment), ("$ref", row.Refunded ? 1 : 0), ("$exp", row.PurchasedPeriodExpiryUtcTicks),
@@ -350,7 +507,7 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
                 ("$sd", row.SignedDateUnixMs), ("$now", stamp), ("$rv", row.RevenueVerified ? 1 : 0),
                 ("$gross", row.GrossRevenueMicros), ("$cur", row.RevenueCurrency),
                 ("$rt", row.RevenueTransactionId), ("$rp", row.RevenuePurchasedAtUnixMs), ("$rr", row.RevenueRefunded ? 1 : 0),
-                ("$rh", row.RefundedRevenueOrderIdsJson));
+                ("$rh", row.RefundedRevenueOrderIdsJson), ("$to", row.TestOrder ? 1 : 0));
             if (decision.Action == ClaimAction.Transfer)
             {
                 foreach (var gone in current.Where(c => c.PlayerId != record.PlayerId))
@@ -469,12 +626,194 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
         }
     }
 
+    public void UpsertSubscriptionRevenueCharge(SubscriptionRevenueCharge charge)
+    {
+        lock (gate)
+        {
+            using var connection = Open();
+            using var tx = connection.BeginTransaction(deferred: false);
+            Execute(connection, tx, """
+                INSERT OR IGNORE INTO subscription_revenue_charges
+                  (store, app_id, revenue_order_id, transaction_id, player_id, owning_install_id, confirmed, offered_anonymous, created_ms, confirmed_ms)
+                VALUES($s,$a,$ord,$t,$p,$inst,$conf,$off,$created,$confMs)
+                """,
+                ("$s", charge.Store), ("$a", charge.ApplicationId), ("$ord", charge.RevenueOrderId),
+                ("$t", charge.TransactionId), ("$p", charge.PlayerId),
+                ("$inst", (object?)charge.OwningInstallId ?? DBNull.Value),
+                ("$conf", charge.Confirmed ? 1 : 0), ("$off", charge.OfferedToAnonymous ? 1 : 0),
+                ("$created", charge.CreatedUtcMs), ("$confMs", (object?)charge.ConfirmedUtcMs ?? DBNull.Value));
+            tx.Commit();
+        }
+    }
+
+    public SubscriptionRevenueCharge? GetSubscriptionRevenueCharge(string store, string applicationId, string revenueOrderId)
+    {
+        lock (gate)
+        {
+            using var connection = Open();
+            return ReadCharge(connection, null, store, applicationId, revenueOrderId);
+        }
+    }
+
+    public IReadOnlyList<SubscriptionRevenueCharge> ClaimPendingSubscriptionRevenueCharges(string playerId, string store, string applicationId, string? installId)
+    {
+        lock (gate)
+        {
+            using var connection = Open();
+            using var tx = connection.BeginTransaction(deferred: false);
+            var list = new List<SubscriptionRevenueCharge>();
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = tx;
+                command.CommandText = """
+                    SELECT store, app_id, transaction_id, revenue_order_id, player_id, owning_install_id, confirmed, offered_anonymous, created_ms, confirmed_ms
+                    FROM subscription_revenue_charges
+                    WHERE store=$s AND app_id=$a AND player_id=$p AND confirmed=0
+                    ORDER BY revenue_order_id
+                    """;
+                command.Parameters.AddWithValue("$s", store); command.Parameters.AddWithValue("$a", applicationId); command.Parameters.AddWithValue("$p", playerId);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var c = MapCharge(reader);
+                    if (c.OwningInstallId != null)
+                    {
+                        if (installId != null && installId == c.OwningInstallId) list.Add(c);
+                    }
+                    else if (!c.OfferedToAnonymous)
+                    {
+                        list.Add(c with { OfferedToAnonymous = true });
+                    }
+                }
+            }
+            foreach (var anon in list.Where(c => c.OwningInstallId == null))
+            {
+                Execute(connection, tx, """
+                    UPDATE subscription_revenue_charges SET offered_anonymous=1
+                    WHERE store=$s AND app_id=$a AND revenue_order_id=$ord
+                    """, ("$s", store), ("$a", applicationId), ("$ord", anon.RevenueOrderId));
+            }
+            tx.Commit();
+            return list;
+        }
+    }
+
+    public SubscriptionRevenueConfirmResult ConfirmSubscriptionRevenueCharge(string playerId, string store, string applicationId, string revenueOrderId, string? installId, DateTimeOffset now)
+    {
+        lock (gate)
+        {
+            using var connection = Open();
+            using var tx = connection.BeginTransaction(deferred: false);
+            var c = ReadCharge(connection, tx, store, applicationId, revenueOrderId);
+            if (c == null || c.PlayerId != playerId)
+            {
+                tx.Commit();
+                throw new VerifierRefusal(404, "transaction_not_found");
+            }
+            if (c.OwningInstallId != null)
+            {
+                if (installId == null || installId != c.OwningInstallId)
+                {
+                    tx.Commit();
+                    return new SubscriptionRevenueConfirmResult { RevenueOrderId = revenueOrderId, Accepted = false, Deliver = false, Status = "ignored_install_mismatch" };
+                }
+                if (c.Confirmed)
+                {
+                    tx.Commit();
+                    return new SubscriptionRevenueConfirmResult { RevenueOrderId = revenueOrderId, Accepted = true, Deliver = false, Status = "already_confirmed" };
+                }
+                Execute(connection, tx, """
+                    UPDATE subscription_revenue_charges SET confirmed=1, confirmed_ms=$now
+                    WHERE store=$s AND app_id=$a AND revenue_order_id=$ord
+                    """, ("$now", now.ToUnixTimeMilliseconds()), ("$s", store), ("$a", applicationId), ("$ord", revenueOrderId));
+                tx.Commit();
+                return new SubscriptionRevenueConfirmResult { RevenueOrderId = revenueOrderId, Accepted = true, Deliver = true, Status = "confirmed" };
+            }
+            if (c.Confirmed)
+            {
+                tx.Commit();
+                return new SubscriptionRevenueConfirmResult { RevenueOrderId = revenueOrderId, Accepted = false, Deliver = false, Status = "already_confirmed" };
+            }
+            Execute(connection, tx, """
+                UPDATE subscription_revenue_charges SET confirmed=1, offered_anonymous=1, confirmed_ms=$now
+                WHERE store=$s AND app_id=$a AND revenue_order_id=$ord
+                """, ("$now", now.ToUnixTimeMilliseconds()), ("$s", store), ("$a", applicationId), ("$ord", revenueOrderId));
+            tx.Commit();
+            return new SubscriptionRevenueConfirmResult { RevenueOrderId = revenueOrderId, Accepted = true, Deliver = true, Status = "confirmed" };
+        }
+    }
+
+    public bool TryAuthorizeSubscriptionProofOffer(string playerId, string store, string applicationId, string revenueOrderId, string? installId)
+    {
+        lock (gate)
+        {
+            using var connection = Open();
+            using var tx = connection.BeginTransaction(deferred: false);
+            var c = ReadCharge(connection, tx, store, applicationId, revenueOrderId);
+            if (c == null) { tx.Commit(); return true; }
+            if (c.PlayerId != playerId) { tx.Commit(); return false; }
+            if (c.OwningInstallId != null)
+            {
+                tx.Commit();
+                return installId != null && installId == c.OwningInstallId;
+            }
+            if (c.Confirmed || c.OfferedToAnonymous) { tx.Commit(); return false; }
+            Execute(connection, tx, """
+                UPDATE subscription_revenue_charges SET offered_anonymous=1
+                WHERE store=$s AND app_id=$a AND revenue_order_id=$ord
+                """, ("$s", store), ("$a", applicationId), ("$ord", revenueOrderId));
+            tx.Commit();
+            return true;
+        }
+    }
+
+    public StoreStorageMetrics GetStorageMetrics()
+    {
+        lock (gate)
+        {
+            long rows;
+            using (var connection = Open())
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "SELECT COUNT(*) FROM purchases";
+                rows = Convert.ToInt64(command.ExecuteScalar());
+            }
+            long bytes = 0;
+            try
+            {
+                if (File.Exists(databasePath)) bytes += new FileInfo(databasePath).Length;
+                if (File.Exists(databasePath + "-wal")) bytes += new FileInfo(databasePath + "-wal").Length;
+            }
+            catch (IOException) { }
+            return new StoreStorageMetrics(rows, bytes);
+        }
+    }
+
+    private static SubscriptionRevenueCharge? ReadCharge(SqliteConnection connection, SqliteTransaction? tx, string store, string appId, string orderId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = """
+            SELECT store, app_id, transaction_id, revenue_order_id, player_id, owning_install_id, confirmed, offered_anonymous, created_ms, confirmed_ms
+            FROM subscription_revenue_charges
+            WHERE store=$s AND app_id=$a AND revenue_order_id=$ord
+            """;
+        command.Parameters.AddWithValue("$s", store); command.Parameters.AddWithValue("$a", appId); command.Parameters.AddWithValue("$ord", orderId);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? MapCharge(reader) : null;
+    }
+
+    private static SubscriptionRevenueCharge MapCharge(SqliteDataReader reader) =>
+        new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5), reader.GetInt64(6) != 0, reader.GetInt64(7) != 0,
+            reader.GetInt64(8), reader.IsDBNull(9) ? null : reader.GetInt64(9));
+
     private static List<PurchaseRecord> Read(SqliteConnection connection, SqliteTransaction? tx, string where, params (string, object)[] args)
     {
         using var command = connection.CreateCommand();
         command.Transaction = tx;
         command.CommandText = "SELECT store, app_id, transaction_id, player_id, product_id, environment, refunded, expiry_ticks, original_ref, signed_payload, signed_date_ms, " +
-            "revenue_verified, gross_revenue_micros, revenue_currency, revenue_transaction_id, revenue_purchased_at_ms, revenue_refunded, refunded_revenue_order_ids_json FROM purchases " + where;
+            "revenue_verified, gross_revenue_micros, revenue_currency, revenue_transaction_id, revenue_purchased_at_ms, revenue_refunded, refunded_revenue_order_ids_json, test_order FROM purchases " + where;
         foreach (var (name, value) in args) command.Parameters.AddWithValue(name, value);
         using var reader = command.ExecuteReader();
         var list = new List<PurchaseRecord>();
@@ -482,7 +821,8 @@ public sealed class SqlitePurchaseStore : IPurchaseStore
             list.Add(new PurchaseRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
                 reader.GetString(5), reader.GetInt64(6) != 0, reader.GetInt64(7), reader.IsDBNull(8) ? null : reader.GetString(8),
                 reader.IsDBNull(9) ? null : reader.GetString(9), reader.GetInt64(10), reader.GetInt64(11) != 0,
-                reader.GetInt64(12), reader.GetString(13), reader.GetString(14), reader.GetInt64(15), reader.GetInt64(16) != 0, reader.GetString(17)));
+                reader.GetInt64(12), reader.GetString(13), reader.GetString(14), reader.GetInt64(15), reader.GetInt64(16) != 0,
+                reader.GetString(17), reader.GetInt64(18) != 0));
         return list;
     }
 

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -10,6 +11,7 @@ public sealed class PurchaseService(
     string appleBundleId = ShorepopCatalog.AppleBundleId)
 {
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
+    private readonly ConcurrentDictionary<string, byte> loggedInstallMismatchConfirms = new(StringComparer.Ordinal);
 
     /// <summary>An unacked Apple consumable may be taken over by any player this long after its last claim.</summary>
     public static readonly TimeSpan ReclaimAfter = TimeSpan.FromHours(24);
@@ -27,12 +29,26 @@ public sealed class PurchaseService(
         if (!ShorepopCatalog.ProductIds.Contains(productId)) throw new VerifierRefusal(422, "unknown_product");
         string transactionId = proof.TransactionId ?? "";
         if (string.IsNullOrWhiteSpace(transactionId) || transactionId.Length > 8192) throw new VerifierRefusal(422, "transaction_missing");
+        string? installId = ShorepopCatalog.NormalizeInstallId(proof.InstallId);
 
         StoreVerdict verdict;
         if (storeName == ShorepopCatalog.AppleStore)
         {
             if (string.IsNullOrEmpty(proof.AppleSignedTransaction)) throw new VerifierRefusal(422, "apple_signed_transaction_required");
             verdict = apple.Check(proof.AppleSignedTransaction, productId, transactionId, now());
+            // In Production scope, when App Review presents a Sandbox transaction and the App Store Server API
+            // is configured, confirm it via one-way Production -> Sandbox lookup and persist the canonical
+            // server-verified Sandbox reference stamped test_order with zero revenue (WO-20261114-810).
+            if (apple.ProductionScope && verdict.TestOrder && appleApi.Configured)
+            {
+                var lookup = await appleApi.LookupTransactionInfoAsync(transactionId, "Production", cancel);
+                if (string.IsNullOrEmpty(lookup.SignedTransactionInfo))
+                    throw new VerifierRefusal(422, "purchase_not_found");
+                var canonical = ServerVerdict(lookup.SignedTransactionInfo, forceTestOrder: true);
+                if (canonical.ProductId != productId || canonical.TransactionId != transactionId)
+                    throw new VerifierRefusal(503, "apple_server_response_mismatch");
+                verdict = canonical;
+            }
         }
         else verdict = await GoogleVerdict(productId, transactionId, cancel);
 
@@ -54,8 +70,9 @@ public sealed class PurchaseService(
                 storeName, productId, Digest(transactionId), result.Decision.Reason,
                 string.Join(",", result.PreviousClaimants.Select(Digest)), Digest(playerId));
         var stored = store.List(playerId, storeName, ApplicationIdFor(storeName)).First(r => r.TransactionId == transactionId);
-        log.LogInformation("validate ok {Store} {Product} kind={Kind} env={Environment} refunded={Refunded} tx={Tx}",
-            storeName, productId, verdict.Kind, stored.Environment, stored.Refunded, Digest(transactionId));
+        RegisterSubscriptionRevenueCharge(stored, playerId, installId, at);
+        log.LogInformation("validate ok {Store} {Product} kind={Kind} env={Environment} testOrder={TestOrder} refunded={Refunded} tx={Tx}",
+            storeName, productId, verdict.Kind, stored.Environment, stored.TestOrder, stored.Refunded, Digest(transactionId));
         return Result(stored);
     }
 
@@ -119,6 +136,132 @@ public sealed class PurchaseService(
         return new AckResult { TransactionId = transactionId, Acked = true };
     }
 
+    /// <summary>
+    /// Server-side Google Play acknowledge/consume with re-read recovery (WO-20261120-650).
+    /// When Play's acknowledge/consume endpoint throws (for example because the client already confirmed),
+    /// re-reads the purchase from Play, re-validates package, product, token, purchaseState, quantity and
+    /// account binding, and settles as finished only when consumptionState==1 (consumable) or
+    /// acknowledgementState==1 (non-consumable/subscription). Fails closed with distinct codes otherwise.
+    /// </summary>
+    public async Task<GoogleFinishResult> FinishGooglePurchaseAsync(string playerId, GoogleFinishRequest? request, CancellationToken cancel)
+    {
+        if (request == null) throw new VerifierRefusal(400, "body_required");
+        string applicationId = string.IsNullOrEmpty(request.ApplicationId) ? googlePackageId : request.ApplicationId;
+        RequireStore(ShorepopCatalog.GoogleStore, applicationId);
+        string productId = request.ProductId ?? "";
+        if (!ShorepopCatalog.ProductIds.Contains(productId)) throw new VerifierRefusal(422, "unknown_product");
+        string token = request.TransactionId ?? "";
+        if (string.IsNullOrWhiteSpace(token) || token.Length > 8192) throw new VerifierRefusal(422, "transaction_missing");
+        if (!google.Configured) throw new VerifierRefusal(503, "google_validation_not_configured");
+
+        var claimants = store.Claimants(ShorepopCatalog.GoogleStore, googlePackageId, token);
+        if (claimants.Count == 0) throw new VerifierRefusal(404, "transaction_not_found");
+        if (!claimants.Contains(playerId, StringComparer.Ordinal))
+            throw new VerifierRefusal(403, "transaction_owned_by_another_player");
+
+        var kind = ShorepopCatalog.CatalogKind(productId);
+        try
+        {
+            if (kind == ProductKind.Consumable)
+                await google.ConsumeProductAsync(googlePackageId, productId, token, cancel);
+            else if (kind == ProductKind.Subscription)
+                await google.AcknowledgeSubscriptionAsync(googlePackageId, productId, token, cancel);
+            else
+                await google.AcknowledgeProductAsync(googlePackageId, productId, token, cancel);
+
+            store.Ack(ShorepopCatalog.GoogleStore, googlePackageId, token, playerId, now());
+            string directState = kind == ProductKind.Consumable ? "consumed" : "acknowledged";
+            log.LogInformation("google finish ok {Product} state={State} tx={Tx}", productId, directState, Digest(token));
+            return new GoogleFinishResult { TransactionId = token, Finished = true, RecoveredFromReread = false, State = directState };
+        }
+        catch (VerifierRefusal refusal) when (refusal.Code == "google_validation_not_configured")
+        {
+            throw;
+        }
+        catch (Exception error) when (error is VerifierRefusal or HttpRequestException ||
+            (error is OperationCanceledException && !cancel.IsCancellationRequested))
+        {
+            log.LogWarning("google finish call failed; re-reading purchase state {Product} kind={Kind} tx={Tx}",
+                productId, kind, Digest(token));
+            JsonElement? reread;
+            try
+            {
+                if (kind == ProductKind.Subscription)
+                    reread = await google.GetSubscriptionPurchaseAsync(googlePackageId, token, cancel);
+                else
+                    reread = await google.GetLegacyProductPurchaseAsync(googlePackageId, productId, token, cancel)
+                        ?? await google.GetProductPurchaseAsync(googlePackageId, token, cancel);
+            }
+            catch (Exception rereadError) when (rereadError is VerifierRefusal or HttpRequestException or JsonException ||
+                (rereadError is OperationCanceledException && !cancel.IsCancellationRequested))
+            {
+                log.LogWarning("google finish reread unavailable {Product} tx={Tx}", productId, Digest(token));
+                throw new VerifierRefusal(503, "google_finish_reread_unavailable");
+            }
+            if (reread == null)
+            {
+                log.LogWarning("google finish reread returned not found {Product} tx={Tx}", productId, Digest(token));
+                throw new VerifierRefusal(403, "google_finish_purchase_not_found");
+            }
+
+            try
+            {
+                string verifiedState = GooglePlayInterpreter.ValidateFinishReread(
+                    reread.Value, googlePackageId, productId, token, kind, request.AccountId, playerId);
+                store.Ack(ShorepopCatalog.GoogleStore, googlePackageId, token, playerId, now());
+                log.LogInformation("google finish recovered via reread {Product} state={State} tx={Tx}",
+                    productId, verifiedState, Digest(token));
+                return new GoogleFinishResult { TransactionId = token, Finished = true, RecoveredFromReread = true, State = verifiedState };
+            }
+            catch (VerifierRefusal refusal)
+            {
+                log.LogWarning("google finish reread refused {Product} status={Status} code={Code} tx={Tx}",
+                    productId, refusal.Status, refusal.Code, Digest(token));
+                throw;
+            }
+        }
+    }
+
+    /// <summary>Returns pending subscription revenue charges eligible for this install (WO-20261113-653).</summary>
+    public IReadOnlyList<SubscriptionRevenueCharge> GetPendingSubscriptionRevenueCharges(
+        string playerId, SubscriptionRevenuePendingRequest? request)
+    {
+        if (request == null) throw new VerifierRefusal(400, "body_required");
+        string storeName = RequireStore(request.Store, request.ApplicationId);
+        string? installId = ShorepopCatalog.NormalizeInstallId(request.InstallId);
+        return store.ClaimPendingSubscriptionRevenueCharges(playerId, storeName, ApplicationIdFor(storeName), installId);
+    }
+
+    /// <summary>
+    /// Confirms or retries a pending subscription revenue charge strictly for its owning install id (WO-20261113-653).
+    /// Cross-install confirms are dropped (logged once) leaving the charge pending for the owning install.
+    /// </summary>
+    public SubscriptionRevenueConfirmResult ConfirmSubscriptionRevenue(string playerId, SubscriptionRevenueConfirmRequest? request)
+    {
+        if (request == null) throw new VerifierRefusal(400, "body_required");
+        string storeName = RequireStore(request.Store, request.ApplicationId);
+        string orderId = request.RevenueOrderId ?? "";
+        if (string.IsNullOrWhiteSpace(orderId) || orderId.Length > 256) throw new VerifierRefusal(422, "transaction_missing");
+        string? installId = ShorepopCatalog.NormalizeInstallId(request.InstallId);
+        var result = store.ConfirmSubscriptionRevenueCharge(playerId, storeName, ApplicationIdFor(storeName), orderId, installId, now());
+        if (result.Status == "ignored_install_mismatch")
+        {
+            string logKey = storeName + "|" + orderId + "|" + (installId ?? "anonymous");
+            if (loggedInstallMismatchConfirms.TryAdd(logKey, 0))
+                log.LogWarning("subscription revenue confirm ignored for non-owning install {Store} order={Order}", storeName, Digest(orderId));
+        }
+        return result;
+    }
+
+    /// <summary>Authorizes subscription revenue-proof recovery strictly for the owning install (WO-20261113-653).</summary>
+    public bool AuthorizeSubscriptionRevenueProof(string playerId, string storeName, string applicationId, string revenueOrderId, string? rawInstallId)
+    {
+        RequireStore(storeName, applicationId);
+        string? installId = ShorepopCatalog.NormalizeInstallId(rawInstallId);
+        if (string.IsNullOrEmpty(revenueOrderId)) return true;
+        return store.TryAuthorizeSubscriptionProofOffer(playerId, storeName, applicationId, revenueOrderId, installId);
+    }
+
     public async Task<IReadOnlyList<ValidatedNativePurchase>> ReconcileAsync(string playerId, ReconcileRequest? request, CancellationToken cancel)
     {
         if (request == null) throw new VerifierRefusal(400, "body_required");
@@ -135,14 +278,27 @@ public sealed class PurchaseService(
 
     /// <summary>Refresh one already-owned purchase for delayed revenue enrichment without replaying the whole ledger.</summary>
     public async Task<ValidatedNativePurchase> RefreshOwnedRevenueAsync(string playerId, string storeName,
-        string applicationId, string transactionId, CancellationToken cancel)
+        string applicationId, string transactionId, CancellationToken cancel, string? installId = null)
     {
         RequireStore(storeName, applicationId);
+        string? normalizedInstallId = ShorepopCatalog.NormalizeInstallId(installId);
         var row = store.List(playerId, storeName, applicationId).FirstOrDefault(r => r.TransactionId == transactionId);
         if (row == null) throw new VerifierRefusal(404, "transaction_not_found");
         if (storeName == ShorepopCatalog.AppleStore) await RefreshApple(playerId, [row], cancel);
         else await RefreshGoogle(playerId, [row], cancel);
-        return Result(store.List(playerId, storeName, applicationId).First(r => r.TransactionId == transactionId));
+        var refreshed = store.List(playerId, storeName, applicationId).First(r => r.TransactionId == transactionId);
+        RegisterSubscriptionRevenueCharge(refreshed, playerId, normalizedInstallId, now());
+        return Result(refreshed);
+    }
+
+    private void RegisterSubscriptionRevenueCharge(PurchaseRecord row, string playerId, string? installId, DateTimeOffset at)
+    {
+        if (!ShorepopCatalog.IsSubscription(row.ProductId) || row.Refunded || row.RevenueRefunded ||
+            row.TestOrder || ShorepopCatalog.IsTestEnvironment(row.Environment) || row.RevenueTransactionId.Length == 0)
+            return;
+        store.UpsertSubscriptionRevenueCharge(new SubscriptionRevenueCharge(
+            row.Store, row.ApplicationId, row.TransactionId, row.RevenueTransactionId,
+            playerId, installId, false, false, at.ToUnixTimeMilliseconds(), null));
     }
 
     private async Task RefreshApple(string playerId, IReadOnlyList<PurchaseRecord> rows, CancellationToken cancel)
@@ -157,7 +313,7 @@ public sealed class PurchaseService(
                 {
                     if (row.SignedPayload == null) throw new AppleVerificationException("missing");
                     var payload = appleVerifier.VerifyAndDecode(row.SignedPayload, DateTimeOffset.FromUnixTimeMilliseconds(Math.Max(1, row.SignedDateUnixMs)));
-                    var verdict = apple.Interpret(payload, row.SignedPayload);
+                    var verdict = apple.Interpret(payload, row.SignedPayload, forceTestOrder: row.TestOrder);
                     if (verdict.TransactionId != row.TransactionId) throw new AppleVerificationException("mismatch");
                     Ingest(playerId, verdict, row.TransactionId);
                 }
@@ -172,14 +328,20 @@ public sealed class PurchaseService(
         var subscriptionOriginals = new HashSet<string>(StringComparer.Ordinal);
         foreach (var row in rows)
         {
-            string? signed = await appleApi.GetTransactionInfoAsync(row.TransactionId, row.Environment, cancel);
-            if (signed != null) Ingest(playerId, ServerVerdict(signed), row.TransactionId);
+            var lookup = await appleApi.LookupTransactionInfoAsync(row.TransactionId, row.Environment, cancel);
+            if (lookup.SignedTransactionInfo != null)
+            {
+                bool testOrder = row.TestOrder || lookup.UsedSandboxFallback || (apple.ProductionScope && lookup.ResolvedEnvironment == "Sandbox");
+                Ingest(playerId, ServerVerdict(lookup.SignedTransactionInfo, forceTestOrder: testOrder), row.TransactionId);
+            }
             if (ShorepopCatalog.IsSubscription(row.ProductId) && subscriptionOriginals.Add(row.OriginalRef ?? row.TransactionId))
             {
                 // Renewals are new transactions under the same originalTransactionId: claim them for this player.
-                foreach (var latest in await appleApi.GetSubscriptionLastTransactionsAsync(row.TransactionId, row.Environment, cancel))
+                var subLookup = await appleApi.LookupSubscriptionLastTransactionsAsync(row.TransactionId, row.Environment, cancel);
+                bool subTestOrder = row.TestOrder || subLookup.UsedSandboxFallback || (apple.ProductionScope && subLookup.ResolvedEnvironment == "Sandbox");
+                foreach (var latest in subLookup.SignedTransactions)
                 {
-                    var verdict = ServerVerdict(latest);
+                    var verdict = ServerVerdict(latest, forceTestOrder: subTestOrder);
                     if (verdict.OriginalTransactionId != null && verdict.OriginalTransactionId == (row.OriginalRef ?? row.TransactionId))
                         Ingest(playerId, verdict, null);
                 }
@@ -187,9 +349,9 @@ public sealed class PurchaseService(
         }
     }
 
-    private StoreVerdict ServerVerdict(string signed)
+    private StoreVerdict ServerVerdict(string signed, bool forceTestOrder = false)
     {
-        try { return apple.Interpret(appleVerifier.VerifyAndDecode(signed, now()), signed); }
+        try { return apple.Interpret(appleVerifier.VerifyAndDecode(signed, now()), signed, forceTestOrder); }
         catch (AppleVerificationException) { throw new VerifierRefusal(503, "apple_server_response_unverifiable"); }
     }
 
@@ -237,9 +399,43 @@ public sealed class PurchaseService(
         var verdict = subscription
             ? GooglePlayInterpreter.Subscription(body.Value, googlePackageId, productId, token)
             : GooglePlayInterpreter.Product(body.Value, googlePackageId, productId, token);
+
+        bool allowCashRevenue = !verdict.TestOrder && !ShorepopCatalog.IsTestEnvironment(verdict.Environment);
+        if (!subscription && allowCashRevenue)
+        {
+            // Check Play v1 purchaseType by key presence (WO-20261020-14): 0 = LicenseTest,
+            // 1 = Promo / 2 = Rewarded / malformed = non-cash without mislabeling a real player internal.
+            try
+            {
+                using var legacyCancel = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+                legacyCancel.CancelAfter(TimeSpan.FromSeconds(2));
+                var legacy = await google.GetLegacyProductPurchaseAsync(googlePackageId, productId, token, legacyCancel.Token);
+                if (legacy != null)
+                {
+                    var purchaseType = GooglePlayInterpreter.ClassifyPurchaseType(legacy.Value);
+                    if (purchaseType == GooglePurchaseType.Test)
+                    {
+                        verdict = verdict with { Environment = "LicenseTest", TestOrder = true };
+                        allowCashRevenue = false;
+                    }
+                    else if (purchaseType != GooglePurchaseType.Charged)
+                    {
+                        allowCashRevenue = false;
+                    }
+                }
+            }
+            catch (Exception error) when (error is VerifierRefusal or HttpRequestException or JsonException ||
+                (error is OperationCanceledException && !cancel.IsCancellationRequested))
+            {
+                log.LogWarning("google v1 purchaseType lookup unavailable; keeping v2 verdict tx={Tx}", Digest(token));
+            }
+        }
+
         // Internal snapshot ordering only; the authenticated response's actual settlement time is
         // reported separately, and is left unknown when the store has not supplied it.
         verdict = verdict with { SignedDateUnixMs = observedAt };
+        if (!allowCashRevenue) return verdict;
+
         string orderId = GooglePlayInterpreter.RevenueOrderId(body.Value, productId, subscription);
         if (orderId.Length == 0 || orderId.Length > 256 || orderId == token) return verdict;
         verdict = verdict with
@@ -280,7 +476,8 @@ public sealed class PurchaseService(
 
     private static PurchaseRecord Record(string playerId, StoreVerdict v) => new(v.Store, v.ApplicationId, v.TransactionId, playerId, v.ProductId,
         v.Environment, v.Refunded, v.PurchasedPeriodExpiryUtcTicks, v.OriginalTransactionId, v.SignedPayload, v.SignedDateUnixMs,
-        v.RevenueVerified, v.GrossRevenueMicros, v.RevenueCurrency, v.RevenueTransactionId, v.RevenuePurchasedAtUnixMs, v.RevenueRefunded);
+        v.RevenueVerified, v.GrossRevenueMicros, v.RevenueCurrency, v.RevenueTransactionId, v.RevenuePurchasedAtUnixMs, v.RevenueRefunded,
+        "[]", v.TestOrder);
 
     private ValidatedNativePurchase Result(PurchaseRecord row)
     {
@@ -292,6 +489,7 @@ public sealed class PurchaseService(
             RevenueCurrency = row.RevenueCurrency, RevenueTransactionId = row.RevenueTransactionId,
             RevenuePurchasedAtUnixMs = row.RevenuePurchasedAtUnixMs,
             RevenueRefunded = row.RevenueRefunded,
+            TestOrder = row.TestOrder,
         };
         if (ShorepopCatalog.IsSubscription(row.ProductId))
         {

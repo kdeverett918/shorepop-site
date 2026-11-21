@@ -585,6 +585,7 @@ PlatformIdentityTests.Run(Case);
 PostgresStoreTests.Run(Case);
 RevenueProofTests.Run(Case);
 RevenueProofBindingTests.Run(Case);
+await HardeningTests.RunAsync(Case, CaseAsync);
 
 try { File.Delete(dbPath); File.Delete(dbPath + "-wal"); File.Delete(dbPath + "-shm"); } catch (IOException) { }
 Console.WriteLine($"RESULT passed={passed} failed={failed}");

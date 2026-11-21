@@ -6,6 +6,11 @@ namespace Shorepop.Verifier;
 public sealed class AppleTransactionChecker(AppleJwsVerifier verifier, string bundleId, IReadOnlySet<string> allowedEnvironments)
 {
     public static readonly IReadOnlySet<string> DefaultEnvironments = new HashSet<string>(StringComparer.Ordinal) { "Production", "Sandbox" };
+    public static readonly IReadOnlySet<string> ProductionOnlyEnvironments = new HashSet<string>(StringComparer.Ordinal) { "Production" };
+    public static readonly IReadOnlySet<string> SandboxOnlyEnvironments = new HashSet<string>(StringComparer.Ordinal) { "Sandbox" };
+
+    /// <summary>True when configured strictly for Production, enabling one-way App Review Sandbox fallback (WO-20261114-810).</summary>
+    public bool ProductionScope => allowedEnvironments.Contains("Production") && !allowedEnvironments.Contains("Sandbox");
 
     /// <summary>Verifies a JWS signed transaction for the product/transaction the client claims.</summary>
     public StoreVerdict Check(string jws, string expectedProductId, string expectedTransactionId, DateTimeOffset effectiveTime)
@@ -20,12 +25,14 @@ public sealed class AppleTransactionChecker(AppleJwsVerifier verifier, string bu
     }
 
     /// <summary>Field checks on an already signature-verified payload.</summary>
-    public StoreVerdict Interpret(JsonElement payload, string jws)
+    public StoreVerdict Interpret(JsonElement payload, string jws, bool forceTestOrder = false)
     {
         string bundle = Text(payload, "bundleId");
         if (bundle != bundleId) throw new VerifierRefusal(422, "bundle_mismatch");
         string environment = Text(payload, "environment");
-        if (!allowedEnvironments.Contains(environment)) throw new VerifierRefusal(422, "environment_not_allowed");
+        bool sandboxFallback = !allowedEnvironments.Contains(environment) && ProductionScope && environment == "Sandbox";
+        if (!allowedEnvironments.Contains(environment) && !sandboxFallback)
+            throw new VerifierRefusal(422, "environment_not_allowed");
         string productId = Text(payload, "productId");
         if (!ShorepopCatalog.ProductIds.Contains(productId)) throw new VerifierRefusal(422, "unknown_product");
         string transactionId = Text(payload, "transactionId");
@@ -47,17 +54,19 @@ public sealed class AppleTransactionChecker(AppleJwsVerifier verifier, string bu
         string original = Text(payload, "originalTransactionId");
         string currency = Text(payload, "currency");
         long purchasedAt = Millis(payload, "purchaseDate");
+        bool testOrder = forceTestOrder || sandboxFallback;
         // Apple signs milliunits, not whole units. Missing economics must not reject an otherwise
         // valid grant; a later server refresh can enrich older signed transactions.
+        // One-way Production -> Sandbox fallback grants are stamped test_order with zero revenue (WO-20261114-810).
         long grossMicros = 0;
-        bool revenueVerified = RevenueValues.IsCurrency(currency) && purchasedAt > 0 &&
+        bool revenueVerified = !testOrder && RevenueValues.IsCurrency(currency) && purchasedAt > 0 &&
             payload.TryGetProperty("price", out var price) && price.ValueKind == JsonValueKind.Number &&
             price.TryGetInt64(out long milliunits) && milliunits >= 0 && milliunits <= long.MaxValue / 1000;
         if (revenueVerified) grossMicros = payload.GetProperty("price").GetInt64() * 1000;
         return new StoreVerdict(ShorepopCatalog.AppleStore, bundleId, productId, transactionId, environment, refunded, expiry,
             original.Length == 0 ? null : original, jws, Millis(payload, "signedDate"), ShorepopCatalog.AppleKind(type, productId),
             AppAccountToken(payload), revenueVerified, grossMicros, revenueVerified ? currency : "",
-            transactionId, purchasedAt);
+            testOrder ? "" : transactionId, testOrder ? 0 : purchasedAt, false, testOrder);
     }
 
     /// <summary>

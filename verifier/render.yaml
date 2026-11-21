@@ -1,10 +1,15 @@
 # Render Blueprint for the Shorepop purchase verifier. Values are set in the dashboard / API,
 # never committed (sync: false). See DEPLOY.md for the non-secret values.
+# Durable storage (WO-20261013-64): always-on starter compute backed by external PostgreSQL
+# (VERIFIER_STORE=postgres + VERIFIER_DATABASE_URL) to avoid both free-plan idle resets and
+# Render persistent-disk stop-first deploy outages.
+# Health isolation (WO-20261118-396): /healthz checks ONLY process configuration and canonical
+# settlement ledger reachability; side jobs and growing-bound warnings report on /status.
 services:
   - type: web
     name: shorepop-verifier-michael
     runtime: docker
-    plan: free
+    plan: starter
     region: oregon
     repo: https://github.com/kdeverett918/shorepop-site
     branch: codex/shorepop-michael-verifier

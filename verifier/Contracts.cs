@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Shorepop.Verifier;
 
 // Wire shapes mirror Assets/Scripts/Services/Commerce/NativePurchaseValidation.cs field-for-field.
@@ -19,6 +21,8 @@ public sealed class NativePurchaseProof
     /// authenticated player, never this field; a mismatch with the server's derivation is only logged.
     /// </summary>
     public string? AppAccountToken { get; set; }
+    /// <summary>Optional stable 32-hex install id used to bind subscription revenue forwards to one install (WO-20261113-653).</summary>
+    public string? InstallId { get; set; }
 }
 
 /// <summary>Body of POST /v1/purchases/ack: the client has durably committed the grant for this transaction.</summary>
@@ -57,7 +61,61 @@ public sealed class ValidatedNativePurchase
     public long RevenuePurchasedAtUnixMs { get; set; }
     /// <summary>The economic order was fully refunded; this does not imply entitlement revocation.</summary>
     public bool RevenueRefunded { get; set; }
+    /// <summary>
+    /// True only for server-classified test orders (App Review Sandbox fallback or Play license-test).
+    /// Omitted on real production responses so existing wire JSON stays byte-identical (WO-20261114-810).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool TestOrder { get; set; }
 }
+
+/// <summary>Body of POST /v1/purchases/finish for Google Play server acknowledge/consume with re-read recovery (WO-20261120-650).</summary>
+public sealed class GoogleFinishRequest
+{
+    public string? ApplicationId { get; set; }
+    public string? ProductId { get; set; }
+    public string? TransactionId { get; set; }
+    /// <summary>Optional expected obfuscated external account id; when present, re-read must match it.</summary>
+    public string? AccountId { get; set; }
+}
+
+public sealed class GoogleFinishResult
+{
+    public string TransactionId { get; set; } = "";
+    public bool Finished { get; set; }
+    public bool RecoveredFromReread { get; set; }
+    public string State { get; set; } = "";
+}
+
+/// <summary>Body of POST /v1/purchases/subscription-revenue/pending (WO-20261113-653).</summary>
+public sealed class SubscriptionRevenuePendingRequest
+{
+    public string? Store { get; set; }
+    public string? ApplicationId { get; set; }
+    public string? InstallId { get; set; }
+}
+
+/// <summary>Body of POST /v1/purchases/subscription-revenue/confirm (WO-20261113-653).</summary>
+public sealed class SubscriptionRevenueConfirmRequest
+{
+    public string? Store { get; set; }
+    public string? ApplicationId { get; set; }
+    public string? RevenueOrderId { get; set; }
+    public string? InstallId { get; set; }
+}
+
+public sealed class SubscriptionRevenueConfirmResult
+{
+    public string RevenueOrderId { get; set; } = "";
+    public bool Accepted { get; set; }
+    public bool Deliver { get; set; }
+    public string Status { get; set; } = "";
+}
+
+public sealed record SubscriptionRevenueCharge(
+    string Store, string ApplicationId, string TransactionId, string RevenueOrderId,
+    string PlayerId, string? OwningInstallId, bool Confirmed, bool OfferedToAnonymous,
+    long CreatedUtcMs, long? ConfirmedUtcMs);
 
 public sealed class ReconcileRequest
 {
@@ -91,7 +149,8 @@ public sealed record StoreVerdict(
     string? OriginalTransactionId, string? SignedPayload, long SignedDateUnixMs, ProductKind Kind,
     string? AppAccountToken = null,
     bool RevenueVerified = false, long GrossRevenueMicros = 0, string RevenueCurrency = "",
-    string RevenueTransactionId = "", long RevenuePurchasedAtUnixMs = 0, bool RevenueRefunded = false);
+    string RevenueTransactionId = "", long RevenuePurchasedAtUnixMs = 0, bool RevenueRefunded = false,
+    bool TestOrder = false, bool AutoRenewing = false);
 
 internal static class RevenueValues
 {
@@ -164,6 +223,38 @@ public static class ShorepopCatalog
 
     /// <summary>Only consumables are bound to the first player; entitlements follow the store account.</summary>
     public static bool SingleOwner(ProductKind kind) => kind == ProductKind.Consumable;
+
+    public static bool IsTestEnvironment(string? environment)
+    {
+        if (string.IsNullOrWhiteSpace(environment)) return false;
+        string e = environment.Trim().ToLowerInvariant().Replace("_", "").Replace("-", "");
+        return e is "sandbox" or "xcode" or "test" or "licensetest" or "staging" or "localtesting";
+    }
+
+    /// <summary>
+    /// Validates an optional client install identifier (WO-20261113-653).
+    /// Empty or null represents an anonymous/legacy client; any non-empty value must be 32 hex chars.
+    /// </summary>
+    public static string? NormalizeInstallId(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return null;
+        string trimmed = value.Trim();
+        if (trimmed.Length != 32 || !trimmed.All(Uri.IsHexDigit))
+            throw new VerifierRefusal(422, "invalid_install_id");
+        return trimmed.ToLowerInvariant();
+    }
+
+    /// <summary>Compares the verifier catalog against a client or live store SKU set (WO-20261013-64).</summary>
+    public static bool ValidateCatalogParity(
+        IEnumerable<string> expectedProductIds,
+        out IReadOnlyList<string> missingFromVerifier,
+        out IReadOnlyList<string> extraInVerifier)
+    {
+        var expected = new HashSet<string>(expectedProductIds ?? [], StringComparer.Ordinal);
+        missingFromVerifier = expected.Where(id => !ProductIds.Contains(id)).Order(StringComparer.Ordinal).ToList();
+        extraInVerifier = ProductIds.Where(id => !expected.Contains(id)).Order(StringComparer.Ordinal).ToList();
+        return expected.Count > 0 && missingFromVerifier.Count == 0 && extraInVerifier.Count == 0;
+    }
 
     public static long UnixMsToTicks(long ms) => DateTimeOffset.FromUnixTimeMilliseconds(ms).UtcTicks;
 }

@@ -10,7 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 var settings = VerifierOptions.FromConfiguration(builder.Configuration);
 string? port = Environment.GetEnvironmentVariable("PORT");
 if (!string.IsNullOrWhiteSpace(port) && int.TryParse(port, out int portNumber)) builder.WebHost.UseUrls($"http://0.0.0.0:{portNumber}");
-builder.WebHost.ConfigureKestrel(server => server.Limits.MaxRequestBodySize = 64 * 1024);
+builder.WebHost.ConfigureKestrel(server => server.Limits.MaxRequestBodySize = GrowingBoundsMonitor.MaxRequestBodyBytes);
 builder.Logging.ClearProviders();
 builder.Logging.AddJsonConsole(json => { json.IncludeScopes = false; json.UseUtcTimestamp = true; });
 builder.Services.ConfigureHttpJsonOptions(json =>
@@ -21,6 +21,8 @@ builder.Services.ConfigureHttpJsonOptions(json =>
     json.SerializerOptions.MaxDepth = 8;
 });
 builder.Services.AddSingleton(settings);
+builder.Services.AddSingleton<SideJobStatusTracker>();
+builder.Services.AddSingleton<GrowingBoundsMonitor>();
 builder.Services.AddSingleton(new UgsJwksCache(new HttpClient(new SocketsHttpHandler {
     AllowAutoRedirect = false, ConnectTimeout = TimeSpan.FromSeconds(3)
 }) { Timeout = TimeSpan.FromSeconds(3) }));
@@ -34,8 +36,11 @@ builder.Services.AddSingleton<IPurchaseStore>(_ => settings.StoreKind switch
     _ => throw new InvalidOperationException("VERIFIER_STORE must be memory, sqlite or postgres."),
 });
 builder.Services.AddSingleton(AppleJwsVerifier.Production());
-builder.Services.AddSingleton<IAppleServerApi>(new AppStoreServerApi(storeHttp, settings.AppleKeyId, settings.AppleIssuerId, settings.ApplePrivateKey, settings.AppleBundleId));
-builder.Services.AddSingleton<IGooglePlayApi>(new GooglePlayApi(storeHttp, settings.GoogleServiceAccountJson));
+builder.Services.AddSingleton<IAppleServerApi>(sp => new AppStoreServerApi(
+    storeHttp, settings.AppleKeyId, settings.AppleIssuerId, settings.ApplePrivateKey, settings.AppleBundleId,
+    sp.GetRequiredService<GrowingBoundsMonitor>()));
+builder.Services.AddSingleton<IGooglePlayApi>(sp => new GooglePlayApi(
+    storeHttp, settings.GoogleServiceAccountJson, sp.GetRequiredService<GrowingBoundsMonitor>()));
 builder.Services.AddSingleton(sp => new PurchaseService(
     sp.GetRequiredService<AppleJwsVerifier>(),
     new AppleTransactionChecker(sp.GetRequiredService<AppleJwsVerifier>(), settings.AppleBundleId, settings.AppleEnvironments),
@@ -60,7 +65,7 @@ builder.Services.AddRateLimiter(options =>
 
 RevenueProofStore? revenueProofs = null;
 builder.Services.AddHostedService(sp => new RevenueProofRetentionService(() => revenueProofs,
-    sp.GetRequiredService<ILogger<RevenueProofRetentionService>>()));
+    sp.GetRequiredService<ILogger<RevenueProofRetentionService>>(), sp.GetRequiredService<SideJobStatusTracker>()));
 var app = builder.Build();
 // Resolve the store at startup so a bad disk path fails the deploy instead of the first purchase.
 if (settings.Configured) app.Services.GetRequiredService<IPurchaseStore>();
@@ -73,10 +78,13 @@ if (settings.Configured && settings.StoreKind == "postgres" && !string.IsNullOrW
     revenueProofs = new RevenueProofStore(settings.DatabaseUrl!, proofKey);
     CryptographicOperations.ZeroMemory(proofKey);
 }
+var boundsMonitor = app.Services.GetRequiredService<GrowingBoundsMonitor>();
 app.Use(async (context, next) =>
 {
     try
     {
+        if (context.Request.ContentLength is long contentLength && contentLength > 0)
+            boundsMonitor.Observe("request_body_bytes", contentLength, GrowingBoundsMonitor.MaxRequestBodyBytes);
         if (context.Request.Path.StartsWithSegments("/v1") && !settings.Configured) throw new VerifierRefusal(503, "verifier_unconfigured");
         await next(context);
     }
@@ -115,14 +123,21 @@ app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();
 
+// Routing health check (Render healthCheckPath): checks ONLY process configuration and canonical
+// settlement ledger reachability. Side jobs (proof retention/export) and growing-bound warnings
+// NEVER fail /healthz and are reported separately on /status (WO-20261118-396).
 app.MapGet("/healthz", async (HttpContext context, IAppleServerApi appleApi, IGooglePlayApi google) =>
 {
     bool available = settings.Configured;
-    string storage = "not_checked";
-    if (available && app.Services.GetRequiredService<IPurchaseStore>() is PostgresPurchaseStore postgres)
+    string storage = "unconfigured";
+    if (available)
     {
-        try { await postgres.CheckReadinessAsync(context.RequestAborted); storage = "reachable"; }
-        catch (Exception error) when (error is NpgsqlException or TimeoutException or OperationCanceledException)
+        try
+        {
+            var store = app.Services.GetRequiredService<IPurchaseStore>();
+            (available, storage) = await VerifierHealth.CheckRoutingReadinessAsync(settings.Configured, store, context.RequestAborted);
+        }
+        catch (Exception error) when (error is NpgsqlException or SqliteException or TimeoutException or OperationCanceledException)
         {
             available = false; storage = "unavailable";
             app.Logger.LogWarning("readiness storage unavailable");
@@ -141,11 +156,58 @@ app.MapGet("/healthz", async (HttpContext context, IAppleServerApi appleApi, IGo
         catalogProducts = ShorepopCatalog.ProductIds.Count,
     }, statusCode: available ? 200 : 503);
 });
-app.MapPost("/v1/purchases/validate", async (NativePurchaseProof proof, HttpContext context, PurchaseService service, IPurchaseStore store) =>
+
+// Separate non-routing status route for unattended probes, side-job alerts and growing-bound warnings (WO-20261118-396).
+app.MapGet("/status", (SideJobStatusTracker sideJobs, GrowingBoundsMonitor bounds, IAppleServerApi appleApi, IGooglePlayApi google) =>
+{
+    StoreStorageMetrics? metrics = null;
+    if (settings.Configured)
+    {
+        try
+        {
+            metrics = app.Services.GetRequiredService<IPurchaseStore>().GetStorageMetrics();
+            bounds.ObserveStorage(metrics);
+        }
+        catch (Exception error) when (error is NpgsqlException or SqliteException or TimeoutException)
+        {
+            app.Logger.LogWarning("status storage metrics unavailable");
+        }
+    }
+    var jobSnapshots = sideJobs.Snapshot();
+    var warnings = bounds.Warnings;
+    bool degraded = jobSnapshots.Values.Any(j => j.Status != "ok" && j.Status != "idle") || warnings.Count > 0;
+    return Results.Json(new
+    {
+        status = !settings.Configured ? "unconfigured" : degraded ? "degraded" : "ok",
+        store = settings.StoreKind switch { "postgres" => "postgres_durable", "memory" => "memory", _ => "sqlite_ephemeral" },
+        appleServerApi = appleApi.Configured,
+        google = google.Configured ? "configured" : "not_configured",
+        catalogProducts = ShorepopCatalog.ProductIds.Count,
+        storageMetrics = metrics,
+        sideJobs = jobSnapshots,
+        boundWarnings = warnings,
+        build = Environment.GetEnvironmentVariable("RENDER_GIT_COMMIT") ?? "local",
+    });
+});
+
+// Read-only catalog metadata route for release parity checks and unattended probes (WO-20261013-64, WO-20261118-396).
+app.MapGet("/v1/catalog", () => Results.Json(new
+{
+    googlePackageId = settings.GooglePackageId,
+    appleBundleId = settings.AppleBundleId,
+    count = ShorepopCatalog.ProductIds.Count,
+    products = ShorepopCatalog.ProductIds.Order(StringComparer.Ordinal).Select(id => new
+    {
+        id,
+        kind = ShorepopCatalog.CatalogKind(id).ToString(),
+    }).ToArray(),
+}));
+
+app.MapPost("/v1/purchases/validate", async (NativePurchaseProof proof, HttpContext context, PurchaseService service, IPurchaseStore store, GrowingBoundsMonitor bounds) =>
 {
     string player = context.User.FindFirst("sub")!.Value;
     var result = await service.ValidateAsync(player, proof, context.RequestAborted);
-    if (revenueProofs != null && RevenueProofBinding.TryBind(proof, result, settings.GoogleLicensePublicKey, out var receipt, out var signature))
+    if (revenueProofs != null && RevenueProofBinding.TryBind(proof, result, settings.GoogleLicensePublicKey, out var receipt, out var signature, bounds))
     {
         try
         {
@@ -171,8 +233,12 @@ app.MapPost("/v1/purchases/revenue-proof", async (RevenueProofRequest request, H
     var row = store.List(player, request.Store, request.ApplicationId).FirstOrDefault(r =>
         r.ProductId == request.ProductId && RevenueProofStore.LedgerKey(r.Store, r.ApplicationId, r.TransactionId) == request.LedgerTransactionKey);
     if (row == null) throw new VerifierRefusal(404, "revenue_proof_not_found");
-    var economics = await service.RefreshOwnedRevenueAsync(player, request.Store, request.ApplicationId, row.TransactionId, context.RequestAborted);
-    if (economics.Refunded) throw new VerifierRefusal(404, "revenue_proof_not_found");
+    var economics = await service.RefreshOwnedRevenueAsync(player, request.Store, request.ApplicationId, row.TransactionId, context.RequestAborted, request.InstallId);
+    if (economics.Refunded || economics.TestOrder || ShorepopCatalog.IsTestEnvironment(economics.Environment))
+        throw new VerifierRefusal(404, "revenue_proof_not_found");
+    if (ShorepopCatalog.IsSubscription(request.ProductId) && !economics.RevenueRefunded &&
+        !service.AuthorizeSubscriptionRevenueProof(player, request.Store, request.ApplicationId, economics.RevenueTransactionId, request.InstallId))
+        throw new VerifierRefusal(404, "revenue_proof_install_mismatch");
     var recovered = economics.RevenueRefunded ? null : revenueProofs.Get(player, request.Store, request.ApplicationId, request.LedgerTransactionKey, request.ProductId, DateTimeOffset.UtcNow);
     if (recovered == null && !economics.RevenueRefunded) throw new VerifierRefusal(404, "revenue_proof_not_found");
     // A Google subscription reuses its token. A concurrent renewal must not pair an old order's
@@ -192,6 +258,15 @@ app.MapPost("/v1/purchases/revenue-proof", async (RevenueProofRequest request, H
     .RequireAuthorization().RequireRateLimiting("player");
 app.MapPost("/v1/purchases/ack", (AckRequest request, HttpContext context, PurchaseService service) =>
     Results.Json(service.Ack(context.User.FindFirst("sub")!.Value, request)))
+    .RequireAuthorization().RequireRateLimiting("player");
+app.MapPost("/v1/purchases/finish", async (GoogleFinishRequest request, HttpContext context, PurchaseService service) =>
+    Results.Json(await service.FinishGooglePurchaseAsync(context.User.FindFirst("sub")!.Value, request, context.RequestAborted)))
+    .RequireAuthorization().RequireRateLimiting("player");
+app.MapPost("/v1/purchases/subscription-revenue/pending", (SubscriptionRevenuePendingRequest request, HttpContext context, PurchaseService service) =>
+    Results.Json(service.GetPendingSubscriptionRevenueCharges(context.User.FindFirst("sub")!.Value, request)))
+    .RequireAuthorization().RequireRateLimiting("player");
+app.MapPost("/v1/purchases/subscription-revenue/confirm", (SubscriptionRevenueConfirmRequest request, HttpContext context, PurchaseService service) =>
+    Results.Json(service.ConfirmSubscriptionRevenue(context.User.FindFirst("sub")!.Value, request)))
     .RequireAuthorization().RequireRateLimiting("player");
 app.MapPost("/v1/purchases/reconcile", async (ReconcileRequest request, HttpContext context, PurchaseService service) =>
     Results.Json(await service.ReconcileAsync(context.User.FindFirst("sub")!.Value, request, context.RequestAborted)))

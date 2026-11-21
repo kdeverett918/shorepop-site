@@ -10,29 +10,48 @@ public static class RevenueProofBinding
     public const int MaximumProofBytes = 48 * 1024;
 
     public static bool TryBind(NativePurchaseProof proof, ValidatedNativePurchase verified,
-        string? googleLicensePublicKey, out string receipt, out string signature)
+        string? googleLicensePublicKey, out string receipt, out string signature, GrowingBoundsMonitor? bounds = null)
     {
         receipt = signature = "";
-        if (verified.Refunded || verified.RevenueRefunded || proof.Store != verified.Store || proof.ApplicationId != verified.ApplicationId ||
+        if (verified.Refunded || verified.RevenueRefunded || verified.TestOrder ||
+            ShorepopCatalog.IsTestEnvironment(verified.Environment) ||
+            proof.Store != verified.Store || proof.ApplicationId != verified.ApplicationId ||
             proof.ProductId != verified.ProductId || proof.TransactionId != verified.TransactionId) return false;
         if (verified.Store == ShorepopCatalog.AppleStore)
         {
             // ValidateAsync has already verified this exact JWS against Apple's configured root and
             // bound its signed bundle/product/transaction to these values. Tenjin accepts SK2 JWS.
             string jws = proof.AppleSignedTransaction ?? "";
-            if (jws.Length == 0 || Encoding.UTF8.GetByteCount(jws) > MaximumProofBytes) return false;
+            int jwsBytes = Encoding.UTF8.GetByteCount(jws);
+            bounds?.Observe("revenue_proof_bytes", jwsBytes, MaximumProofBytes);
+            if (jws.Length == 0 || jwsBytes > MaximumProofBytes) return false;
             receipt = jws;
             return true;
         }
         if (verified.Store != ShorepopCatalog.GoogleStore || string.IsNullOrWhiteSpace(googleLicensePublicKey) ||
-            string.IsNullOrEmpty(proof.Receipt) || Encoding.UTF8.GetByteCount(proof.Receipt) > MaximumProofBytes) return false;
+            string.IsNullOrEmpty(proof.Receipt)) return false;
+        int receiptBytes = Encoding.UTF8.GetByteCount(proof.Receipt);
+        bounds?.Observe("revenue_proof_bytes", receiptBytes, MaximumProofBytes);
+        if (receiptBytes > MaximumProofBytes) return false;
         try
         {
+            // Support both Unity IAP 4 wrapped receipts ({Store, Payload: "{\"json\":...,\"signature\":...}"})
+            // and Unity IAP 5 bare Google receipts ({json, signature, skuDetails}) (WO-20261020-14).
             using var outer = JsonDocument.Parse(proof.Receipt, new JsonDocumentOptions { MaxDepth = 8 });
-            if (Text(outer.RootElement, "Store") != ShorepopCatalog.GoogleStore) return false;
-            using var payload = JsonDocument.Parse(Text(outer.RootElement, "Payload"), new JsonDocumentOptions { MaxDepth = 8 });
-            string originalJson = Text(payload.RootElement, "json");
-            string signed = Text(payload.RootElement, "signature");
+            if (outer.RootElement.ValueKind != JsonValueKind.Object) return false;
+            string originalJson, signed;
+            if (outer.RootElement.TryGetProperty("Store", out var storeProp) || outer.RootElement.TryGetProperty("Payload", out _))
+            {
+                if (Text(outer.RootElement, "Store") != ShorepopCatalog.GoogleStore) return false;
+                using var payload = JsonDocument.Parse(Text(outer.RootElement, "Payload"), new JsonDocumentOptions { MaxDepth = 8 });
+                originalJson = Text(payload.RootElement, "json");
+                signed = Text(payload.RootElement, "signature");
+            }
+            else
+            {
+                originalJson = Text(outer.RootElement, "json");
+                signed = Text(outer.RootElement, "signature");
+            }
             if (originalJson.Length == 0 || signed.Length == 0 || signed.Length > 4096) return false;
             using var data = JsonDocument.Parse(originalJson, new JsonDocumentOptions { MaxDepth = 8 });
             var purchase = data.RootElement;
@@ -92,6 +111,8 @@ public sealed class RevenueProofRequest
     public string ApplicationId { get; set; } = "";
     public string ProductId { get; set; } = "";
     public string LedgerTransactionKey { get; set; } = "";
+    /// <summary>Optional stable 32-hex install id for install-bound subscription proof recovery (WO-20261113-653).</summary>
+    public string? InstallId { get; set; }
 }
 
 public sealed class RevenueProofResponse
