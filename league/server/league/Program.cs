@@ -5,6 +5,12 @@ using Npgsql;
 using Shorepop.League;
 using System.Threading.RateLimiting;
 
+if (args.Length == 1 && args[0] is "privacy-inspect" or "privacy-erase")
+{
+    Environment.ExitCode = LeaguePrivacyCli.Run(args[0]);
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 var settings = builder.Configuration.GetSection("League").Get<LeagueOptions>() ?? new LeagueOptions();
 builder.WebHost.ConfigureKestrel(server => server.Limits.MaxRequestBodySize = 256 * 1024);

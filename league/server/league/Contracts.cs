@@ -45,6 +45,8 @@ public sealed record Acceptance(string AttemptId, string Status, bool Duplicate,
 public sealed record RecordBest(int StableSlot, string Rules, string Category, bool Known, long Score, string Name);
 public sealed record WeeklyRow(int Rank, string Name, long Score, string Tier, bool IsPlayer);
 public sealed record WeeklyStanding(DateTime WeekStartUtc, long WeeklyScore, int Rank, string Tier, IReadOnlyList<WeeklyRow> Neighbours);
+public sealed record ErasureReceipt(bool AlreadyErased, int Attempts, int LevelBests, int WeeklyLevels, int WeeklyTotals);
+public sealed record ErasureState(bool Suppressed, int Attempts, int LevelBests, int WeeklyLevels, int WeeklyTotals);
 public sealed record ErrorBody(string Code,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? AttemptId = null);
 public sealed class LeagueRefusal(int status, string code) : Exception(code)

@@ -21,6 +21,8 @@ public sealed class LeagueRepository(LeagueOptions options)
         LeagueDatabase.Lock(connection, transaction, "schema:v1");
         string ddl = """
             CREATE TABLE IF NOT EXISTS configuration (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS erased_subjects (
+              subject_hash TEXT PRIMARY KEY, case_reference TEXT NOT NULL, erased_utc TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS attempts (
               player TEXT NOT NULL, attempt_id TEXT NOT NULL, payload_hash TEXT NOT NULL,
               result_json TEXT NOT NULL, accepted_utc TEXT NOT NULL, PRIMARY KEY(player, attempt_id));
@@ -63,6 +65,7 @@ public sealed class LeagueRepository(LeagueOptions options)
         // lock across replicas. The receipt and every ranking delta commit together.
         using var transaction = LeagueDatabase.Begin(connection);
         LeagueDatabase.Lock(connection, transaction, "player:" + player);
+        if (Suppressed(connection, transaction, player)) throw new LeagueRefusal(422, "player_erased");
         using (var existing = Command(connection, transaction,
             "SELECT payload_hash, result_json FROM attempts WHERE player=$player AND attempt_id=$id", ("$player", player), ("$id", a.Id)))
         using (var reader = existing.ExecuteReader())
@@ -148,6 +151,50 @@ public sealed class LeagueRepository(LeagueOptions options)
         return new(week, own, rank, "", rows);
     }
 
+    /// <summary>Operator-only. The caller resolves the subject from an independently verified case;
+    /// no HTTP endpoint exposes this method. Subject case is preserved exactly.</summary>
+    public ErasureReceipt ErasePlayer(string player, string caseReference, DateTime now)
+    {
+        options.RequireConfigured();
+        if (!ValidPlayer(player)) throw new LeagueRefusal(422, "invalid_subject");
+        if (now.Kind != DateTimeKind.Utc || !Guid.TryParse(caseReference, out var caseId))
+            throw new LeagueRefusal(422, "invalid_erasure_case");
+        using var connection = Open();
+        using var transaction = LeagueDatabase.Begin(connection);
+        LeagueDatabase.Lock(connection, transaction, "player:" + player);
+        bool already = Suppressed(connection, transaction, player);
+        Execute(connection, transaction, """
+            INSERT INTO erased_subjects(subject_hash,case_reference,erased_utc) VALUES($hash,$case,$now)
+            ON CONFLICT(subject_hash) DO NOTHING
+            """, ("$hash", ErasedKey(player)), ("$case", caseId.ToString("D")), ("$now", Utc(now)));
+        int Remove(string table)
+        {
+            // Table names are fixed call-site literals, never request fields.
+            using var command = Command(connection, transaction, "DELETE FROM " + table + " WHERE player=$player", ("$player", player));
+            return command.ExecuteNonQuery();
+        }
+        var result = new ErasureReceipt(already, Remove("attempts"), Remove("level_bests"),
+            Remove("weekly_levels"), Remove("weekly_totals"));
+        transaction.Commit();
+        return result;
+    }
+
+    public ErasureState InspectErasure(string player)
+    {
+        options.RequireConfigured();
+        if (!ValidPlayer(player)) throw new LeagueRefusal(422, "invalid_subject");
+        using var connection = Open();
+        using var transaction = LeagueDatabase.Begin(connection, readOnly: true);
+        int Count(string table) => checked((int)Number(Scalar(connection, transaction,
+            "SELECT COUNT(*) FROM " + table + " WHERE player=$player", ("$player", player))));
+        return new ErasureState(Suppressed(connection, transaction, player), Count("attempts"),
+            Count("level_bests"), Count("weekly_levels"), Count("weekly_totals"));
+    }
+
+    private string ErasedKey(string player) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(options.ProjectId + ":" + player)));
+    private bool Suppressed(DbConnection connection, DbTransaction transaction, string player) =>
+        Number(Scalar(connection, transaction, "SELECT COUNT(*) FROM erased_subjects WHERE subject_hash=$hash", ("$hash", ErasedKey(player)))) != 0;
+
     public static DateTime WeekStart(DateTime now)
     {
         if (now.Kind != DateTimeKind.Utc) throw new ArgumentException("UTC required", nameof(now));
@@ -173,7 +220,7 @@ public sealed class LeagueRepository(LeagueOptions options)
         var policy = await command.ExecuteScalarAsync(timeout.Token);
         if ((string?)policy != options.ProjectId + "|" + options.RepeatPolicy + "|" + options.BoosterPolicy)
             throw new LeagueRefusal(503, "database_policy_mismatch");
-        using var tables = Command(connection, null, "SELECT 1 FROM attempts WHERE FALSE; SELECT 1 FROM level_bests WHERE FALSE; SELECT 1 FROM weekly_levels WHERE FALSE; SELECT 1 FROM weekly_totals WHERE FALSE;");
+        using var tables = Command(connection, null, "SELECT 1 FROM attempts WHERE FALSE; SELECT 1 FROM level_bests WHERE FALSE; SELECT 1 FROM weekly_levels WHERE FALSE; SELECT 1 FROM weekly_totals WHERE FALSE; SELECT 1 FROM erased_subjects WHERE FALSE;");
         tables.CommandTimeout = 3;
         await tables.ExecuteNonQueryAsync(timeout.Token);
     }

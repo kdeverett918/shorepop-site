@@ -9,6 +9,16 @@ namespace BloomHarbor
     public enum DifficultyTier { Normal, Hard, SuperHard }
 
     /// <summary>
+    /// Remote-configurable campaign difficulty deltas with compiled safety rails (WO-20261112-304, GAP-A4).
+    /// </summary>
+    public struct DifficultyModifiers
+    {
+        public int EarlyMovesDelta, MidMovesDelta, HardMovesDelta, SuperHardMovesDelta;
+        public int TargetScorePct;
+        public static DifficultyModifiers Identity => new DifficultyModifiers { TargetScorePct = 100 };
+    }
+
+    /// <summary>
     /// Fixed seeds, authored blocker layouts and solver-calibrated score targets; no adaptive or
     /// paid difficulty. Five coasts of <see cref="LevelsPerCoast"/> levels each
     /// (design/implementation/expansion-r1).
@@ -51,8 +61,9 @@ namespace BloomHarbor
         /// the Big Wave's two swept rows and of the board's edges, where the hand and its row both read.</summary>
         public const int RocketPracticeX = 3, RocketPracticeY = 3;
         public static bool IsMechanicLesson(int id) => id==RocketLessonLevel || id==BombLessonLevel || id==PrismLessonLevel || id==BreezeLessonLevel || id==BreezePracticeLevel;
-        /// <summary>Campaign ids of the levels that first carry bottles and sand (world 1 stages 21 and 31).</summary>
-        public const int FirstDropLevel = 21, FirstSandLevel = 31;
+        /// <summary>Campaign ids of the levels that first carry bottles and sand (world 1 stages 15 and 17 since
+        /// variety r1; they were 21 and 31).</summary>
+        public const int FirstDropLevel = 15, FirstSandLevel = 17;
         public const int TutorialStages = 12;
         /// <summary>Layout shapes in the library; one map leg's worth of stages reuses each in turn.</summary>
         private const int ShapeCount = 12;
@@ -77,38 +88,51 @@ namespace BloomHarbor
         // Hard to 0.45 and Super Hard to 0.35, and every Normal level the saw-tooth left under 0.74
         // raised to that floor, on the curve in ScheduledWinRate; levels 1-12, 20, 28 and 29 keep their
         // pinned targets.
+        // Retuned 2026-11-25 (owner: "levels seem too short", "ftue protection?", "boards seem way too
+        // quick"; design/specs/difficulty-tiers.md section 6): the tutorial's twelve targets and budgets
+        // were re-set by hand so the reference player needs about 8 taps on level 1 rising to about 18-21
+        // on levels 9-12 (it needed 2-16), and wins every attempt with any starting booster too (a Rocket
+        // and a Bomb break up level 1's checkerboard), every level 13-30 is calibrated to the 0.95 FTUE protection
+        // rate, 31-45 ramp back to the curve, and the wave breaks every ~6 taps
+        // (BoardModel.WaveCapacity 45 -> 36), so every other target moved with it; the lessons 20, 28
+        // and 29 keep their boards and are calibrated to their 0.95 like any other level.
+        // Recalibrated 2026-11-25 for variety r1 (owner: "more variation between levels"): the 86 levels
+        // whose goals or boards changed (colour, crate and ice orders, bottles from 15 and sand from 17,
+        // two-goal levels) moved, then the 76 that open on a set piece; every unchanged board calibrated to
+        // exactly the target it had. Level 8's
+        // hand-set target went 9700 -> 8800: its colour order took the median win to 17 taps, past its 12-16 band.
         // Method, bands and the per-world win-rate table: docs/qa/campaign-difficulty.md.
         private static readonly int[] Targets = {
-            1200, 2000, 2800, 3200, 3400, 3800, 4200, 4600, 5000, 5400,
-            5800, 6200, 11360, 14600, 15740, 13490, 13510, 13540, 12390, 13440,
-            17330, 15600, 17520, 14840, 10260, 8580, 11560, 10530, 11610, 8880,
-            17800, 8730, 11610, 10120, 9470, 8650, 12040, 9700, 9770, 11100,
-            20650, 8880, 9470, 10370, 11250, 11710, 10170, 9220, 12260, 9850,
-            18480, 9300, 10880, 9300, 8710, 11790, 12730, 9080, 10610, 10290,
-            10960, 10320, 11140, 11950, 10300, 11270, 10500, 11440, 11270, 13200,
-            20490, 11110, 9140, 11990, 11470, 9320, 12560, 10210, 10230, 14870,
-            18700, 13170, 10760, 10770, 10240, 11420, 9730, 13300, 12860, 12030,
-            19970, 10380, 11050, 10340, 12710, 12650, 12430, 13130, 9260, 12270,
-            20380, 10850, 11480, 10660, 11300, 12120, 10710, 9700, 12230, 12150,
-            22090, 12900, 11260, 12460, 11370, 12500, 10800, 13220, 10010, 9880,
-            9650, 9570, 12020, 10730, 12120, 11310, 13750, 11500, 10420, 14560,
-            22250, 11470, 10970, 12390, 11280, 13660, 12910, 8630, 13050, 12880,
-            18990, 11700, 10920, 10350, 10700, 10940, 11220, 12450, 11620, 14340,
-            19100, 8590, 13320, 12550, 14870, 13180, 11840, 13570, 12060, 11470,
-            25130, 9270, 11210, 12300, 11590, 14220, 11840, 11710, 12880, 14440,
-            20280, 14390, 11220, 13570, 11370, 11720, 12450, 11140, 12120, 11950,
-            11030, 11730, 13240, 11540, 12770, 11700, 13280, 11620, 14250, 10910,
-            23580, 11530, 12630, 16280, 13230, 12000, 14010, 10640, 13030, 17750,
-            20640, 12910, 14290, 15550, 14490, 13020, 11820, 11160, 13840, 15360,
-            20800, 12450, 12560, 11940, 13970, 13380, 13120, 15110, 12180, 12840,
-            24180, 11500, 11760, 12220, 12540, 15330, 13650, 13090, 12390, 12230,
-            19620, 13900, 12900, 12710, 12020, 14020, 12200, 12880, 12140, 11640,
-            13000, 12960, 12890, 12110, 13130, 12910, 13100, 13880, 13590, 12860,
-            23450, 12580, 11580, 15870, 13110, 13440, 12900, 12840, 14080, 15180,
-            24350, 17250, 14690, 11500, 12140, 14310, 14660, 14400, 13420, 13630,
-            26620, 15070, 13560, 12740, 14900, 15640, 13350, 18150, 11980, 13460,
-            24600, 12190, 13110, 13450, 12740, 16830, 13010, 15520, 13240, 14030,
-            21800, 17160, 13060, 16010, 14700, 13550, 14340, 12830, 14360, 12830,
+            11000, 9500, 12300, 6600, 16000, 11700, 12400, 8800, 7700, 7300,
+            7500, 9000, 11000, 13370, 16210, 12000, 14910, 11820, 14980, 13350,
+            17220, 13960, 11520, 17350, 8520, 11360, 8810, 10630, 13230, 10700,
+            18290, 9390, 9730, 10690, 11030, 11700, 8420, 10170, 9720, 14070,
+            17030, 10320, 10280, 12740, 9970, 11720, 11820, 9980, 12450, 11380,
+            17050, 9690, 9840, 12290, 10020, 11460, 11630, 9460, 13950, 11340,
+            10920, 10820, 11290, 12520, 11310, 11830, 11510, 11540, 11860, 13690,
+            21760, 12010, 9800, 12810, 12260, 11970, 12480, 10930, 12310, 15510,
+            19120, 14570, 12670, 10580, 11300, 12300, 9260, 12680, 13180, 12430,
+            21910, 10770, 11430, 11940, 13790, 12900, 13320, 13980, 9990, 11770,
+            21520, 11870, 13050, 10720, 11320, 13460, 11610, 9280, 13160, 11540,
+            20360, 16550, 12150, 13220, 11050, 13800, 11310, 14340, 11100, 10480,
+            10850, 11080, 13170, 11420, 13210, 11290, 14290, 12370, 11070, 14030,
+            22440, 12150, 11450, 13100, 12210, 14330, 13980, 10540, 12770, 13170,
+            21090, 12920, 11570, 14150, 11630, 12160, 13150, 13340, 12100, 14800,
+            19030, 11620, 13530, 13000, 14250, 15300, 12750, 15000, 12900, 12350,
+            23470, 10890, 11830, 12610, 12600, 15730, 12510, 13070, 13280, 15160,
+            23140, 14790, 11760, 15290, 12000, 13390, 14960, 11790, 13070, 11870,
+            12130, 12840, 13540, 12540, 13040, 13040, 13350, 12150, 14640, 11920,
+            23440, 12510, 15360, 17060, 14050, 12390, 14910, 11010, 13000, 18550,
+            20150, 14030, 16320, 15970, 14970, 14780, 12320, 11940, 14420, 15740,
+            23800, 12480, 13150, 12120, 15720, 14700, 13440, 17280, 13500, 14130,
+            26860, 12210, 13300, 13380, 13210, 16430, 14170, 13490, 12390, 13240,
+            23270, 14300, 14830, 14760, 13420, 14380, 12330, 12990, 13890, 11690,
+            13280, 13450, 12970, 12850, 13800, 13110, 13710, 14760, 13720, 13220,
+            23010, 13680, 13460, 17020, 14250, 14090, 13480, 12720, 14950, 15960,
+            23230, 18060, 15740, 12610, 14110, 14880, 15120, 15170, 13790, 12800,
+            27220, 15850, 14270, 14570, 14910, 17040, 14890, 18720, 13350, 13780,
+            27050, 12800, 14830, 13860, 12330, 18940, 14300, 16780, 14870, 13400,
+            24480, 17470, 13450, 17630, 14300, 13640, 14640, 13690, 15410, 13130
         };
         // Eight qualifiers and six places per coast: 48 combinations, exactly the stages a coast
         // needs beyond the twelve authored ones, and every one still sounds like its own coast.
@@ -135,12 +159,38 @@ namespace BloomHarbor
         };
         private static readonly List<LevelDefinition> levels = Build();
         private static readonly List<LevelDefinition> legacyLevels = Build(true);
+        private static DifficultyModifiers activeModifiers = DifficultyModifiers.Identity;
+        public static DifficultyModifiers ActiveDifficultyModifiers { get { return activeModifiers; } }
+        public static void SetDifficultyModifiers(DifficultyModifiers mods)
+        {
+            activeModifiers = new DifficultyModifiers
+            {
+                EarlyMovesDelta = Math.Max(-3, Math.Min(5, mods.EarlyMovesDelta)),
+                MidMovesDelta = Math.Max(-3, Math.Min(5, mods.MidMovesDelta)),
+                HardMovesDelta = Math.Max(-3, Math.Min(5, mods.HardMovesDelta)),
+                SuperHardMovesDelta = Math.Max(-3, Math.Min(5, mods.SuperHardMovesDelta)),
+                TargetScorePct = mods.TargetScorePct == 0 ? 100 : Math.Max(80, Math.Min(120, mods.TargetScorePct))
+            };
+        }
+        private static bool IsIdentityModifiers(DifficultyModifiers m) =>
+            m.EarlyMovesDelta == 0 && m.MidMovesDelta == 0 && m.HardMovesDelta == 0 && m.SuperHardMovesDelta == 0 &&
+            (m.TargetScorePct == 0 || m.TargetScorePct == 100);
         public static LevelDefinition GetLegacy(int id)
         { if (id < 1 || id > legacyLevels.Count) throw new ArgumentOutOfRangeException("id"); return legacyLevels[id - 1]; }
         public static IReadOnlyList<LevelDefinition> All { get { return levels; } }
         public static int Count { get { return levels.Count; } }
+        internal static LevelDefinition GetRaw(int id)
+        {
+            if (id < 1) throw new ArgumentOutOfRangeException("id");
+            return id <= levels.Count ? levels[id - 1] : BuildEndless(id);
+        }
+        public static LevelDefinition GetOrEndless(int levelId) { return Get(levelId); }
         public static LevelDefinition Get(int id)
-        { if (id < 1 || id > levels.Count) throw new ArgumentOutOfRangeException("id"); return levels[id - 1]; }
+        {
+            LevelDefinition raw = GetRaw(id);
+            if (id <= 5 || IsIdentityModifiers(activeModifiers)) return raw;
+            return ApplyModifiers(raw, id, activeModifiers);
+        }
 
         // The five coasts are the five chapters. Palette intent (design contract, Slice B, written for
         // the pre-r17 worlds): coast 1 sunlit candy, coast 2 deeper sea-glass, coast 3 warm dusk,
@@ -243,17 +293,25 @@ namespace BloomHarbor
                 System.Globalization.CultureInfo.InvariantCulture.CompareInfo.IndexOf(text, name, System.Globalization.CompareOptions.IgnoreCase) >= 0;
         }
 
-        /// <summary>The coast a campaign level belongs to: <see cref="LevelsPerCoast"/> levels each.</summary>
+        /// <summary>The coast a campaign level belongs to: <see cref="LevelsPerCoast"/> levels each (cycling 1..5 in Harbor Master endless stages 301+).</summary>
         public static CoastDefinition CoastFor(int levelId)
         {
-            if (levelId < 1 || levelId > levels.Count) throw new ArgumentOutOfRangeException("levelId");
-            return coasts[(levelId - 1) / LevelsPerCoast];
+            if (levelId < 1) throw new ArgumentOutOfRangeException("levelId");
+            return coasts[WorldOf(levelId) - 1];
         }
 
         /// <summary>The coast this level belongs to, 1..5. The catalog's own word for a world.</summary>
-        public static int WorldOf(int levelId) { return (levelId - 1) / LevelsPerCoast + 1; }
+        public static int WorldOf(int levelId)
+        {
+            if (levelId > LevelCount) return ((levelId - LevelCount - 1) % CoastCount) + 1;
+            return (levelId - 1) / LevelsPerCoast + 1;
+        }
         /// <summary>The level's place inside its coast, 1..<see cref="LevelsPerCoast"/>.</summary>
-        public static int StageOf(int levelId) { return (levelId - 1) % LevelsPerCoast + 1; }
+        public static int StageOf(int levelId)
+        {
+            if (levelId > LevelCount) return 31 + ((levelId - LevelCount - 1) * 7) % 29;
+            return (levelId - 1) % LevelsPerCoast + 1;
+        }
         /// <summary>
         /// The level's permanent identity: its place in a full-size campaign, 1..300. Seeds, names
         /// and calibrated targets are all keyed to it, so a level is the same board whatever
@@ -300,12 +358,14 @@ namespace BloomHarbor
                         Seed = unchecked(0xB1000000u + (uint)(slot * 7919) + (!legacy && slot==28?1u:0u)),
                         ColorCount = legacy && world == 1 && stage >= 5 && stage <= 7 ? 4 : ColorsFor(world, stage),
                         CreationTier = legacy ? 3 : world == 1 ? stage < 4 ? 0 : stage < 12 ? 1 : stage < 20 ? 2 : 3 : 3,
-                        Moves = MovesFor(world, stage) + (!legacy && ObjectiveFor(world, stage) == LevelObjective.Drop ? DropExtraMoves : 0),
+                        Moves = MovesFor(world, stage, legacy) + (legacy ? 0 : ObjectiveMoves(world, stage)),
                         BreezeEnabled = world > 1 || stage >= (legacy ? 5 : 28),
                         // The frozen legacy catalog keeps the rules its attempts began under.
                         WaveEnabled = !legacy && (world > 1 || stage >= WaveLessonLevel),
                         Introduction = IntroductionFor(world, stage)
                     };
+                    // Variety r1: the level's own pieces (presentation only; the board's colours stay abstract).
+                    if (!legacy) level.ColorSubjects = SubjectsFor(level, world, stage);
                     AddLayout(level, world, stage);
                     AddCollectProps(level, world, stage);
                     // The lesson color used to be the first collection goal. It still selects the
@@ -325,7 +385,7 @@ namespace BloomHarbor
                     { level.Blockers.Clear(); AuthorBreezeLesson(level, stage == 28 ? 5 : 6, 1); }
                     AddShellEncounter(level, world, stage);
                     // The legacy catalog is frozen: its attempts finish under the rules they began with.
-                    if (!legacy) AddBoardMechanic(level, world, stage);
+                    if (!legacy) { PrepareVariety(level, world, stage); AddBoardMechanic(level, world, stage); AddOrders(level, world, stage); AddSetPiece(level, world, stage); }
                     result.Add(level);
                 }
             return result;
@@ -372,10 +432,12 @@ namespace BloomHarbor
 
         /// <summary>The schedule's version, reported as the `difficulty_schedule` super-property on
         /// session_start so a PostHog read can split cohorts by the curve they played.</summary>
-        public const string DifficultySchedule = "hard-v1";
+        public const string DifficultySchedule = "hard-v2";
         /// <summary>The first labeled hard level. The genre puts the first one at L15-25
-        /// (research/DOCTRINE-DIGEST.md 1.8); 18 sits in the middle and is not a pinned fixture.</summary>
-        public const int FirstHardLevel = 18;
+        /// (research/DOCTRINE-DIGEST.md 1.8). It was 18 under `hard-v1`; FTUE protection (owner
+        /// 2026-11-25, schedule `hard-v2`) moved it to the end of that window, inside the protection
+        /// window and softened to <see cref="FtueHardWinRate"/>.</summary>
+        public const int FirstHardLevel = 25;
         /// <summary>From <see cref="HardEvery"/> * 3 = 30 on, every tenth level is Hard: exactly the
         /// campaign's gates, which already carry five fewer moves, so the label and the structure agree.</summary>
         public const int HardEvery = 10;
@@ -389,6 +451,23 @@ namespace BloomHarbor
         /// the tiers).</summary>
         public const double NormalWinRateFloor = .74;
 
+        // ---- FTUE protection (owner 2026-11-25, design/specs/difficulty-tiers.md section 6) ----
+
+        /// <summary>The last level of the FTUE protection window. Levels 13 to here are calibrated to
+        /// <see cref="FtueWinRate"/> (a labeled Hard one to <see cref="FtueHardWinRate"/>): under
+        /// `hard-v1` the curve dropped from the unloseable tutorial straight to 0.73-0.80 at level 13 and
+        /// a 0.45 Hard level at 18, a cliff right after the tutorial.</summary>
+        public const int FtueWindowEnd = 30;
+        /// <summary>Levels after <see cref="FtueWindowEnd"/> ramp linearly from the protection rates back
+        /// to the ordinary curve, which they meet at this level.</summary>
+        public const int FtueRampEnd = 45;
+        /// <summary>The reference player's scheduled win rate on a Normal level in the window, and on a
+        /// labeled Hard one (the genre's first hard levels are soft: a loss teaches boosters, it does not
+        /// wall a day-0 player).</summary>
+        public const double FtueWinRate = .95, FtueHardWinRate = .67;
+        /// <summary>True for a level the FTUE protection window or its ramp still eases.</summary>
+        public static bool InFtueProtection(int levelId) { return levelId > TutorialStages && levelId <= FtueRampEnd; }
+
         /// <summary>
         /// The level's labeled difficulty. Hard: level <see cref="FirstHardLevel"/>, then every tenth
         /// level from 30; Super Hard: every fiftieth (50, 100, ... 300). Everything else, including the
@@ -398,11 +477,20 @@ namespace BloomHarbor
         /// </summary>
         public static DifficultyTier TierOf(int levelId)
         {
-            if (levelId < 1 || levelId > LevelCount) return DifficultyTier.Normal;
+            if (levelId < 1) return DifficultyTier.Normal;
+            if (levelId > LevelCount)
+            {
+                int cycle = (levelId - LevelCount - 1) % 5;
+                return cycle == 4 ? DifficultyTier.SuperHard : cycle == 2 ? DifficultyTier.Hard : DifficultyTier.Normal;
+            }
             if (levelId % SuperHardEvery == 0) return DifficultyTier.SuperHard;
             if (levelId == FirstHardLevel || (levelId >= 3 * HardEvery && levelId % HardEvery == 0)) return DifficultyTier.Hard;
             return DifficultyTier.Normal;
         }
+
+        /// <summary>True when a Normal stage immediately follows a SuperHard peak (AY-CL05).</summary>
+        public static bool IsBreatherAfterPeak(int levelId) =>
+            levelId > 1 && TierOf(levelId) == DifficultyTier.Normal && TierOf(levelId - 1) == DifficultyTier.SuperHard;
 
         /// <summary>The analytics value of a tier: `normal`, `hard` or `super_hard`.</summary>
         public static string TierSlug(DifficultyTier tier) =>
@@ -419,6 +507,10 @@ namespace BloomHarbor
         /// normal levels). This is the
         /// difficulty contract the recorded targets were calibrated against, kept here as data rather
         /// than in the test so the catalog states its own intent.
+        ///
+        /// FTUE protection (owner 2026-11-25): levels 13-<see cref="FtueWindowEnd"/> are scheduled at
+        /// <see cref="FtueWinRate"/>, a labeled Hard one at <see cref="FtueHardWinRate"/>, and levels up to
+        /// <see cref="FtueRampEnd"/> ramp linearly from those rates back to the curve above.
         /// </summary>
         public static double ScheduledWinRate(int world, int stage)
         {
@@ -426,13 +518,40 @@ namespace BloomHarbor
             if (world == 1 && (stage == 20 || stage == 28 || stage == 29)) return .95;
             int id = (world - 1) * LevelsPerCoast + stage;
             var tier = TierOf(id);
-            if (tier == DifficultyTier.SuperHard) return SuperHardWinRate;
-            if (tier == DifficultyTier.Hard) return HardWinRate;
-            // The pre-tier saw-tooth (0.86 at a block's opening down to 0.60 at its gate, a point lower
-            // per world), with the Normal floor under it: only the levels it left below the floor move.
-            double start = .86 - .01 * (world - 1), gate = .60 - .01 * (world - 1);
-            int position = (stage - 1) % GateInterval + 1;
-            return Math.Max(NormalWinRateFloor, start - (start - gate) * (position - 1) / (GateInterval - 1));
+            double curve;
+            if (tier == DifficultyTier.SuperHard) curve = SuperHardWinRate;
+            else if (tier == DifficultyTier.Hard) curve = HardWinRate;
+            else
+            {
+                // The pre-tier saw-tooth (0.86 at a block's opening down to 0.60 at its gate, a point lower
+                // per world), with the Normal floor under it: only the levels it left below the floor move.
+                double start = .86 - .01 * (world - 1), gate = .60 - .01 * (world - 1);
+                int position = (stage - 1) % GateInterval + 1;
+                curve = Math.Max(NormalWinRateFloor, start - (start - gate) * (position - 1) / (GateInterval - 1));
+            }
+            if (!InFtueProtection(id) || tier == DifficultyTier.SuperHard) return curve;
+            double protectedRate = tier == DifficultyTier.Hard ? FtueHardWinRate : FtueWinRate;
+            if (id <= FtueWindowEnd) return protectedRate;
+            double weight = (double)(FtueRampEnd - id) / (FtueRampEnd - FtueWindowEnd);
+            return curve + (protectedRate - curve) * weight;
+        }
+
+        /// <summary>
+        /// The tutorial's move budgets, levels 1-12 (owner 2026-11-25: "levels seem too short"). Each is
+        /// about 1.7-2.1x the taps the reference player needs at the level's target (median 9 on level 1
+        /// rising to 21 on level 12) and at least two more than its slowest of 64 attempts, so the
+        /// tutorial stays unloseable with real slack and the leftover moves stay sensible: the last-moves
+        /// Rush converts what is left. Measured in design/specs/difficulty-tiers.md section 6. A method,
+        /// not a static array: the level list is built in a static initializer that runs first.
+        /// </summary>
+        private static int TutorialMoves(int stage)
+        {
+            switch (stage)
+            {
+                case 1: return 20; case 2: return 21; case 3: return 22; case 4: return 22;
+                case 5: return 25; case 6: return 26; case 7: return 27; case 8: return 30;
+                case 9: return 30; case 10: return 32; case 11: return 33; default: return 35;
+            }
         }
 
         /// <summary>
@@ -440,9 +559,10 @@ namespace BloomHarbor
         /// is calibrated to what the reference player achieves inside this very budget: a breather
         /// gets four more moves and a gate five fewer, and later worlds run longer.
         /// </summary>
-        private static int MovesFor(int world, int stage)
+        private static int MovesFor(int world, int stage, bool legacy = false)
         {
-            if (IsTutorial(world, stage)) return stage <= 4 ? 22 : 32 + (stage - 1) % 3;
+            // The frozen legacy catalog keeps the budgets its attempts began under.
+            if (IsTutorial(world, stage)) return legacy ? (stage <= 4 ? 22 : 32 + (stage - 1) % 3) : TutorialMoves(stage);
             int moves = 30 + 2 * (world - 1) + stage % 3;
             if (stage > 1 && stage % GateInterval == 1) return moves + 4;
             if (stage % GateInterval == 0) return moves - 5;
@@ -548,6 +668,44 @@ namespace BloomHarbor
             if (objective == LevelObjective.Drop) return "Clear the columns under the bottles to bring every one ashore, and reach the target.";
             if (objective == LevelObjective.Sand) return "Aim your clears at the sand to wash every patch, and reach the target.";
             return "Grow a larger group to make a special, or bring two specials together for a combination.";
+        }
+
+        // ---- Variety r1: each level's own pieces (owner 2026-11-25, "not always the same items") ----
+
+        /// <summary>
+        /// Which of the world's five subjects (WorldThemeDefinition.TileSubjects order) each colour of this
+        /// level wears: a permutation of 0..4 whose first <see cref="LevelDefinition.ColorCount"/> entries are
+        /// the subjects the board deals. Presentation only, so nothing about the board, its seed, its routes
+        /// or its target moves with it.
+        ///
+        /// A level of k colours deals the k subjects starting at a window that steps two places round the
+        /// world's five per stage (and three per world), so two neighbouring three-colour levels share at most
+        /// one piece and two neighbouring four-colour levels differ by one, and the order inside the window
+        /// comes from the level's own seed through a separate stream. A five-colour level deals all five and
+        /// only the order moves. Level 1 keeps the token order: it is the store's first board and a pinned
+        /// fixture cell for cell.
+        /// </summary>
+        public static int[] SubjectsFor(LevelDefinition level, int world, int stage)
+        {
+            if (level == null) return null;
+            if (world == 1 && stage == 1) return null;
+            const int subjects = 5;
+            int k = Math.Max(1, Math.Min(subjects, level.ColorCount));
+            int window = ((2 * (stage - 1) + 3 * (world - 1)) % subjects + subjects) % subjects;
+            var order = new int[subjects];
+            for (int i = 0; i < k; i++) order[i] = (window + i) % subjects;
+            uint state = Stream(level, stage, 0x5B1EC75Au);
+            for (int i = k - 1; i > 0; i--)
+            { int j = (int)(Step(ref state) % (uint)(i + 1)); int swap = order[i]; order[i] = order[j]; order[j] = swap; }
+            // The subjects the board does not deal follow in token order, so the map is always complete.
+            int next = k;
+            for (int s = 0; s < subjects; s++)
+            {
+                bool dealt = false;
+                for (int i = 0; i < k; i++) if (order[i] == s) dealt = true;
+                if (!dealt) order[next++] = s;
+            }
+            return order;
         }
 
         private static void AuthorTutorial(LevelDefinition level, int id, int lessonColor)
@@ -661,7 +819,7 @@ namespace BloomHarbor
         // these three campaign encounters, preserving their existing target, seed and rules.
         internal static LevelDefinition DailyChallengeSource(int levelId)
         {
-            LevelDefinition source = Get(levelId);
+            LevelDefinition source = GetRaw(levelId);
             int world = WorldOf(levelId), stage = StageOf(levelId);
             if (!HasShells(levelId) && world != 1) return source;
             var original = new LevelDefinition
@@ -677,6 +835,9 @@ namespace BloomHarbor
             {
                 int[] targets = {14545,10390,10480,10090,909,2727,9145,8800,7954,8027,2290,6209};
                 original.TargetScore = targets[stage-1];
+                // The recipe keeps the tutorial budgets it was frozen with (the campaign's were retuned
+                // 2026-11-25, owner "levels seem too short"): a daily board never changes under a player.
+                original.Moves = MovesFor(world, stage, true);
                 original.ColorCount = stage <= 4 ? 3 : 4;
                 original.CreationTier = 3;
                 original.BreezeEnabled = stage >= 5;
@@ -699,15 +860,16 @@ namespace BloomHarbor
         /// </summary>
         public static bool HasCollectGoal(int levelId)
         {
-            if (levelId < 1 || levelId > LevelCount) return false;
+            if (levelId < 1) return false;
             return WorldOf(levelId) >= CollectPropCatalog.FirstCoast && StageOf(levelId) % 2 == 1;
         }
 
         // ---- Board-mechanics-r16: bottles and sand (design/specs/board-mechanics-r16.md) ----
 
         /// <summary>World 1 stage that first carries message bottles, and the one that first carries sand.
-        /// Both sit after the tutorial block and on breathers, never on a mechanic lesson.</summary>
-        public const int FirstDropStage = 21, FirstSandStage = 31;
+        /// Both sit after the tutorial block, inside FTUE protection, never on a mechanic lesson (variety r1
+        /// brought them forward from 21 and 31).</summary>
+        public const int FirstDropStage = 15, FirstSandStage = 17;
         /// <summary>From this stage a later coast mixes bottles and sand into its score-only stages.
         /// Stages 1-12 of every coast stay as they were: the daily challenge borrows exactly those.</summary>
         public const int MechanicsFromStage = 13;
@@ -724,37 +886,393 @@ namespace BloomHarbor
         /// </summary>
         public static LevelObjective ObjectiveOf(int levelId)
         {
-            if (levelId < 1 || levelId > LevelCount) return LevelObjective.Score;
-            return ObjectiveFor(WorldOf(levelId), StageOf(levelId));
+            if (levelId < 1) return LevelObjective.Score;
+            return ObjectiveOfGoals(GetRaw(levelId), 0);
         }
 
+        /// <summary>Variety r1: the second thing a two-goal level asks for, or Score when it asks for one.</summary>
+        public static LevelObjective SecondaryObjectiveOf(int levelId)
+        {
+            if (levelId < 1) return LevelObjective.Score;
+            return ObjectiveOfGoals(GetRaw(levelId), 1);
+        }
+
+        /// <summary>The objective a built definition's goal at <paramref name="index"/> states (Score past its last).</summary>
+        public static LevelObjective ObjectiveOfGoals(LevelDefinition level, int index)
+        {
+            if (level == null || level.Goals == null || index < 0 || index >= level.Goals.Count || level.Goals[index] == null) return LevelObjective.Score;
+            switch (level.Goals[index].Type)
+            {
+                case GoalType.Prop: return LevelObjective.Prop;
+                case GoalType.Drop: return LevelObjective.Drop;
+                case GoalType.Sand: return LevelObjective.Sand;
+                case GoalType.Color: return LevelObjective.Collect;
+                case GoalType.Crate: return LevelObjective.Crate;
+                case GoalType.Ice: return LevelObjective.Ice;
+                default: return LevelObjective.Score;
+            }
+        }
+
+        private static LevelDefinition ApplyModifiers(LevelDefinition raw, int id, DifficultyModifiers mods)
+        {
+            var tier = TierOf(id);
+            int moveDelta = tier == DifficultyTier.SuperHard
+                ? mods.SuperHardMovesDelta
+                : tier == DifficultyTier.Hard
+                    ? mods.HardMovesDelta
+                    : id <= 60 ? mods.EarlyMovesDelta : mods.MidMovesDelta;
+            int pct = mods.TargetScorePct == 0 ? 100 : mods.TargetScorePct;
+            int adjustedMoves = Math.Max(5, Math.Min(1000, raw.Moves + moveDelta));
+            int adjustedTarget = pct == 100
+                ? raw.TargetScore
+                : Math.Max(100, Math.Min(LevelDefinition.MaximumTargetScore,
+                    (int)Math.Round(raw.TargetScore * (pct / 100.0) / 10.0, MidpointRounding.AwayFromZero) * 10));
+
+            var copy = new LevelDefinition
+            {
+                Id = raw.Id, Chapter = raw.Chapter, Name = raw.Name,
+                Width = raw.Width, Height = raw.Height, Moves = adjustedMoves,
+                ColorCount = raw.ColorCount, CreationTier = raw.CreationTier,
+                Seed = raw.Seed, TargetScore = adjustedTarget,
+                BreezeEnabled = raw.BreezeEnabled, InitialBreezeCharge = raw.InitialBreezeCharge,
+                WaveEnabled = raw.WaveEnabled, InitialWaveCharge = raw.InitialWaveCharge,
+                Introduction = raw.Introduction, InitialColors = raw.InitialColors, ColorSubjects = raw.ColorSubjects
+            };
+            foreach (var b in raw.Blockers) copy.Blockers.Add(b);
+            foreach (var g in raw.Goals) copy.Goals.Add(g);
+            foreach (var s in raw.Specials) copy.Specials.Add(s);
+            return copy;
+        }
+
+        private static uint MixEndlessSeed(uint basis, int id)
+        {
+            unchecked
+            {
+                uint x = basis ^ ((uint)id * 0x9E3779B9u);
+                x ^= x >> 16;
+                x *= 0x85EBCA6Bu;
+                x ^= x >> 13;
+                x *= 0xC2B2AE35u;
+                x ^= x >> 16;
+                return x == 0u ? basis : x;
+            }
+        }
+
+        private static LevelDefinition BuildEndless(int id)
+        {
+            int world = WorldOf(id), stage = StageOf(id);
+            var tier = TierOf(id);
+            bool breather = IsBreatherAfterPeak(id);
+            var objective = ObjectiveFor(world, stage);
+            uint seed = MixEndlessSeed(0x5F3759DFu, id);
+            int colorCount = breather ? 4 : 5;
+            int moves = (tier == DifficultyTier.SuperHard ? 29 : tier == DifficultyTier.Hard ? 31 : breather ? 38 : 34) +
+                (objective == LevelObjective.Drop ? DropExtraMoves : 0);
+            int targetScore = (tier == DifficultyTier.SuperHard ? 21500 : tier == DifficultyTier.Hard ? 17500 : breather ? 11800 : 13800) +
+                ((id - LevelCount - 1) % 6) * 250;
+            int nameIdx = id - LevelCount - 1;
+            string[] qualifiers = Qualifiers[world - 1], places = Places[world - 1];
+            var level = new LevelDefinition
+            {
+                Id = id, Chapter = world,
+                Name = qualifiers[nameIdx % qualifiers.Length] + " " + places[(nameIdx / qualifiers.Length) % places.Length],
+                Seed = seed, ColorCount = colorCount, CreationTier = 3,
+                Moves = moves, TargetScore = targetScore,
+                BreezeEnabled = true, WaveEnabled = true,
+                InitialColors = null, Introduction = IntroductionFor(world, stage)
+            };
+            level.ColorSubjects = SubjectsFor(level, world, stage);
+            AddLayout(level, world, stage);
+            AddCollectProps(level, world, stage);
+            PrepareVariety(level, world, stage);
+            AddBoardMechanic(level, world, stage);
+            AddOrders(level, world, stage);
+            return level;
+        }
+
+        /// <summary>
+        /// The level's scheduled objective (the first goal it carries); <see cref="SecondaryFor"/> is the
+        /// second on a two-goal level. Variety r1 (owner 2026-11-25: "more variation between levels"):
+        /// Arrival Cove is scheduled by hand, <see cref="ArrivalCoveSchedule"/>, so no two neighbouring
+        /// levels ask for the same thing and pure score levels are the exception; coasts two to five keep
+        /// their prop rhythm on odd stages and their bottle and sand blocks, and the score-only slots
+        /// between them become colour orders, crate and ice goals. Stages 1-12 of coasts two to five are
+        /// left exactly as they were: the daily challenge borrows those boards live (goals, layout and
+        /// calibrated target), and a daily recipe never changes under a player.
+        /// </summary>
         private static LevelObjective ObjectiveFor(int world, int stage)
         {
+            if (world == 1) return ArrivalCove(stage, 0);
             if (world >= CollectPropCatalog.FirstCoast && stage % 2 == 1) return LevelObjective.Prop;
-            if (world == 1)
-            {
-                int id = stage;
-                if (stage < FirstDropStage || stage % 2 == 0 || IsMechanicLesson(id)) return LevelObjective.Score;
-                if (stage < FirstSandStage) return LevelObjective.Drop;
-                return (stage - FirstSandStage) / 2 % 2 == 0 ? LevelObjective.Sand : LevelObjective.Drop;
-            }
             if (stage < MechanicsFromStage) return LevelObjective.Score;
             int k = (stage - MechanicsFromStage - 1) / 2;
             switch (k % 4)
             {
                 case 0: return LevelObjective.Drop;
                 case 1: return LevelObjective.Sand;
-                case 2: return LevelObjective.Score;
+                case 2:
+                    int turn = k / 4 % 3;
+                    return turn == 0 ? LevelObjective.Collect : turn == 1 ? LevelObjective.Crate : LevelObjective.Ice;
                 default: return k / 4 % 2 == 0 ? LevelObjective.Drop : LevelObjective.Sand;
             }
         }
+
+        /// <summary>The second objective of a two-goal level, or Score. Never a second bottle or sand goal.</summary>
+        private static LevelObjective SecondaryFor(int world, int stage)
+        {
+            if (world == 1) return ArrivalCove(stage, 1);
+            if (stage < MechanicsFromStage || stage % 2 == 1) return LevelObjective.Score;
+            // From a coast's fifth block a bottle or sand level also places an order.
+            int k = (stage - MechanicsFromStage - 1) / 2;
+            if (stage >= 41 && (k % 4 == 0 || k % 4 == 3)) return k / 4 % 2 == 0 ? LevelObjective.Collect : LevelObjective.Crate;
+            return LevelObjective.Score;
+        }
+
+        /// <summary>
+        /// Arrival Cove, stage by stage (variety r1). One letter per objective, a second letter for a
+        /// two-goal level: S score only, C collect a colour, K open every crate, I clear every ice, D bring
+        /// the bottles ashore, N wash the sand. The mechanic lessons (4, 12, 20, 28, 29), the Big Wave's
+        /// first level (5), the shell lesson (9) and the very first boards stay score only. Bottles arrive
+        /// at 15 and sand at 17 (they were 21 and 31), ice in the coast's second half, two-goal levels from
+        /// 37. No two neighbours ask for the same thing. A constant, not a static array: the level list is
+        /// built in a static initializer that runs before any array field below it.
+        /// </summary>
+        const string ArrivalCoveSchedule =
+            "S S C S S C K C S K " +
+            "C S K C D K N C D S " +
+            "N K C D K N C S S D " +
+            "I C N K I D CK N I D " +
+            "C KI N DC I K S NC D K " +
+            "I C NK D I CK N IC D K";
+
+        private static LevelObjective ArrivalCove(int stage, int index)
+        {
+            // The stage-th space-separated entry.
+            int start = 0;
+            for (int i = 1; i < stage && start >= 0; i++) { start = ArrivalCoveSchedule.IndexOf(' ', start); if (start >= 0) start++; }
+            if (stage < 1 || start < 0 || start >= ArrivalCoveSchedule.Length) return LevelObjective.Score;
+            int end = ArrivalCoveSchedule.IndexOf(' ', start);
+            if (end < 0) end = ArrivalCoveSchedule.Length;
+            if (index >= end - start) return LevelObjective.Score;
+            switch (ArrivalCoveSchedule[start + index])
+            {
+                case 'C': return LevelObjective.Collect;
+                case 'K': return LevelObjective.Crate;
+                case 'I': return LevelObjective.Ice;
+                case 'D': return LevelObjective.Drop;
+                case 'N': return LevelObjective.Sand;
+                default: return LevelObjective.Score;
+            }
+        }
+
+        // ---- Variety r1: orders beside the score target (colour, crates, ice) ----
+
+        /// <summary>
+        /// Readies the board for its orders before bottles and sand are placed: on an Arrival Cove ice level
+        /// the layout's crates become frosted tiles (every other one on a level that also wants crates), so
+        /// the coast that never had ice teaches it on boards the player already knows. Coasts two to five
+        /// already lay their own ice.
+        /// </summary>
+        private static void PrepareVariety(LevelDefinition level, int world, int stage)
+        {
+            if (world != 1) return;
+            bool ice = ObjectiveFor(world, stage) == LevelObjective.Ice || SecondaryFor(world, stage) == LevelObjective.Ice;
+            if (!ice) return;
+            bool crates = ObjectiveFor(world, stage) == LevelObjective.Crate || SecondaryFor(world, stage) == LevelObjective.Crate;
+            int index = 0;
+            foreach (var blocker in level.Blockers)
+            {
+                if (blocker.CrateHp == 0 || blocker.Prop != 0 || blocker.Shell || blocker.Bottle) continue;
+                if (!crates || index % 2 == 0) { blocker.CrateHp = 0; blocker.IceHp = 1; }
+                index++;
+            }
+        }
+
+        /// <summary>
+        /// Adds the level's colour, crate and ice orders, after everything else is on the board so each count
+        /// is exactly what stands there. A level scheduled for an order its board cannot honour (fewer than
+        /// <see cref="MinimumBlockerOrder"/> crates or ice) asks for a colour instead, so a goal is never a
+        /// formality. The goals keep their scheduled order: the first is the level's primary objective.
+        /// </summary>
+        private static void AddOrders(LevelDefinition level, int world, int stage)
+        {
+            if (world == 1 && IsMechanicLesson(stage)) return;
+            var wanted = new[] { ObjectiveFor(world, stage), SecondaryFor(world, stage) };
+            bool colour = false;
+            foreach (var objective in wanted)
+            {
+                if (objective != LevelObjective.Collect && objective != LevelObjective.Crate && objective != LevelObjective.Ice) continue;
+                var type = objective == LevelObjective.Crate ? GoalType.Crate : objective == LevelObjective.Ice ? GoalType.Ice : GoalType.Color;
+                if (type != GoalType.Color)
+                {
+                    int count = OrderBlockers(level, type);
+                    bool taken = false;
+                    foreach (var goal in level.Goals) if (goal.Type == type) taken = true;
+                    if (count >= MinimumBlockerOrder && !taken) { level.Goals.Add(new GoalDefinition(type, count)); continue; }
+                }
+                if (colour) continue;
+                colour = true;
+                level.Goals.Add(new GoalDefinition(GoalType.Color, ColorOrderCount(level, world, stage), ColorOrderColour(level, stage)));
+            }
+        }
+
+        /// <summary>The fewest crates or ice a crate or ice order asks for.</summary>
+        public const int MinimumBlockerOrder = 3;
+
+        // ---- Variety r1: set-piece openings ----
+
+        /// <summary>
+        /// The opening set pieces (variety r1, design/specs/board-mechanics-r16.md "variety r1"): one to three
+        /// specials standing on the opening board, as x, y, type triples (type 1 row rocket, 2 column rocket,
+        /// 3 bomb, 4 prism). Board shapes with void cells were judged unsafe for this round; a set piece is
+        /// the safe lever in their place: the start frame and the first decision differ level to level, and
+        /// Core already deals authored specials (Rocket practice) without drawing from the seed. A method,
+        /// not a static array: the level list is built in a static initializer that runs before any array
+        /// field declared below it.
+        /// </summary>
+        static int[] SetPiece(int index)
+        {
+            switch (index)
+            {
+                case 0: return new[] { 1, 4, 2, 6, 4, 2 };            // twin column rockets on the flanks
+                case 1: return new[] { 3, 6, 1, 4, 2, 1 };            // two row rockets, high and low
+                case 2: return new[] { 3, 4, 3 };                     // a bomb at the heart
+                case 3: return new[] { 1, 1, 3, 6, 7, 3 };            // bombs in opposite corners
+                case 4: return new[] { 3, 7, 4 };                     // a prism up top
+                case 5: return new[] { 2, 1, 1, 5, 4, 1, 2, 7, 1 };   // a ladder of row rockets
+                case 6: return new[] { 2, 5, 3, 5, 3, 2 };            // a bomb beside a column rocket
+                case 7: return new[] { 0, 2, 2, 7, 6, 2, 3, 4, 1 };   // corner columns and a crossing row
+                case 8: return new[] { 4, 0, 3, 3, 8, 2 };            // a bomb on the floor, a column rocket on the lid
+                default: return new[] { 1, 6, 1, 6, 2, 1 };           // row rockets crossing the board's diagonal
+            }
+        }
+
+        /// <summary>How many set pieces <see cref="SetPiece"/> holds.</summary>
+        public const int SetPieceCount = 10;
+
+        /// <summary>
+        /// True for a level that opens on a set piece: one level in three from stage 13 (never the tutorial or
+        /// the stages the daily challenge borrows), never a lesson, never the first level of a new ask (it
+        /// teaches on a clean board) and never a board a QA lane pins its opening on (18, 21, 22, 23, 30).
+        /// </summary>
+        public static bool HasSetPiece(int world, int stage)
+        {
+            if (stage < MechanicsFromStage || (stage + world) % 3 != 0) return false;
+            if (world != 1) return true;
+            if (IsMechanicLesson(stage) || stage == FirstDropStage || stage == FirstSandStage) return false;
+            if (stage == 18 || stage == 21 || stage == 22 || stage == 23 || stage == 30) return false;
+            // The first ice (31) and the first two-goal level (37) keep a clean board too.
+            return stage != 31 && stage != 37;
+        }
+
+        private static void AddSetPiece(LevelDefinition level, int world, int stage)
+        {
+            if (!HasSetPiece(world, stage)) return;
+            uint state = Stream(level, stage, 0x5E7F1ECEu);
+            var piece = SetPiece((int)(Step(ref state) % (uint)SetPieceCount));
+            bool mirror = Step(ref state) % 2 == 1;
+            var taken = new HashSet<BoardPosition>();
+            foreach (var blocker in level.Blockers) taken.Add(new BoardPosition(blocker.X, blocker.Y));
+            foreach (var special in level.Specials) taken.Add(new BoardPosition(special.X, special.Y));
+            for (int i = 0; i + 2 < piece.Length; i += 3)
+            {
+                var type = (SpecialType)piece[i + 2];
+                // Prisms arrive with their lesson (Arrival Cove 20).
+                if (type == SpecialType.Prism && world == 1 && stage <= PrismLessonLevel) type = SpecialType.Bomb;
+                int x = mirror ? level.Width - 1 - piece[i] : piece[i], y = Math.Min(level.Height - 1, piece[i + 1]);
+                // A blocker on the cell moves the special one step up, then down; a board with neither skips it.
+                foreach (int dy in new[] { 0, 1, -1 })
+                {
+                    var cell = new BoardPosition(x, y + dy);
+                    if (cell.Y < 0 || cell.Y >= level.Height || taken.Contains(cell)) continue;
+                    taken.Add(cell);
+                    level.Specials.Add(new SpecialPlacement(cell.X, cell.Y, type));
+                    break;
+                }
+            }
+        }
+
+        static int[] firstWithGoal;
+        static int firstTwoGoals = -1;
+
+        /// <summary>The first campaign level whose board carries a goal of <paramref name="type"/>, or 0:
+        /// the level whose goal card says in one line what the new ask means (variety r1).</summary>
+        public static int FirstLevelWith(GoalType type)
+        {
+            if (firstWithGoal == null)
+            {
+                var first = new int[Enum.GetValues(typeof(GoalType)).Length];
+                for (int id = Count; id >= 1; id--)
+                    foreach (var goal in GetRaw(id).Goals)
+                        if (goal != null && (int)goal.Type >= 0 && (int)goal.Type < first.Length) first[(int)goal.Type] = id;
+                firstWithGoal = first;
+            }
+            int index = (int)type;
+            return index >= 0 && index < firstWithGoal.Length ? firstWithGoal[index] : 0;
+        }
+
+        /// <summary>The first campaign level that asks for two things besides its score, or 0.</summary>
+        public static int FirstTwoGoalLevel
+        {
+            get
+            {
+                if (firstTwoGoals < 0)
+                {
+                    int found = 0;
+                    for (int id = 1; id <= Count && found == 0; id++) if (GetRaw(id).Goals.Count >= 2) found = id;
+                    firstTwoGoals = found;
+                }
+                return firstTwoGoals;
+            }
+        }
+
+        /// <summary>Crates (not props, not shells) or iced tiles on the definition's opening board.</summary>
+        public static int OrderBlockers(LevelDefinition level, GoalType type)
+        {
+            int count = 0;
+            if (level == null || level.Blockers == null) return 0;
+            foreach (var blocker in level.Blockers)
+            {
+                if (type == GoalType.Crate && blocker.CrateHp > 0 && blocker.Prop == 0 && !blocker.Shell) count++;
+                if (type == GoalType.Ice && blocker.IceHp > 0) count++;
+            }
+            return count;
+        }
+
+        /// <summary>The colour a colour order asks for, from the level's own seed through its own stream.</summary>
+        private static int ColorOrderColour(LevelDefinition level, int stage)
+        {
+            uint state = Stream(level, stage, 0xC01055EDu);
+            return (int)(Step(ref state) % (uint)Math.Max(1, level.ColorCount));
+        }
+
+        /// <summary>
+        /// How many tiles of its colour a colour order asks for: a share of what the reference player clears
+        /// of one colour in the budget (about six tiles a tap with the wave, an even share per colour), sized
+        /// so the order is finished well inside a winning run and the score target stays what decides the
+        /// level. Rounded to five from fifteen up so the chip reads a clean number. Measured in
+        /// design/specs/board-mechanics-r16.md, "variety r1".
+        /// </summary>
+        public static int ColorOrderCount(LevelDefinition level, int world, int stage)
+        {
+            if (level == null) return 0;
+            double share = IsTutorial(world, stage) ? ColorOrderTutorialShare : ColorOrderShare;
+            int raw = (int)Math.Floor(share * level.Moves * ColorOrderTilesPerTap / Math.Max(1, level.ColorCount));
+            if (raw >= 15) raw = raw / 5 * 5;
+            return Math.Max(6, raw);
+        }
+
+        /// <summary>The colour order's share of a budget's worth of one colour, in the tutorial and after it.</summary>
+        public const double ColorOrderTutorialShare = .20, ColorOrderShare = .40;
+        /// <summary>Tiles the reference player clears per tap, wave included, used to size colour orders.</summary>
+        public const double ColorOrderTilesPerTap = 6;
 
         /// <summary>How many bottles a Drop level brings ashore. Two start on the board; refill
         /// launches the rest one at a time. Tuned against the reference player's goal completion
         /// (design/specs/board-mechanics-r16.md, calibration table).</summary>
         public static int DropCount(int levelId)
         {
-            if (ObjectiveOf(levelId) != LevelObjective.Drop) return 0;
+            if (ObjectiveFor(WorldOf(levelId), StageOf(levelId)) != LevelObjective.Drop) return 0;
             int world = WorldOf(levelId), stage = StageOf(levelId);
             if (world == 1) return stage < 41 ? 2 : 3;
             return 3;
@@ -763,11 +1281,27 @@ namespace BloomHarbor
         /// <summary>How many sand cells a Sand level lays down; the goal asks for every one.</summary>
         public static int SandCount(int levelId)
         {
-            if (ObjectiveOf(levelId) != LevelObjective.Sand) return 0;
+            if (ObjectiveFor(WorldOf(levelId), StageOf(levelId)) != LevelObjective.Sand) return 0;
             int world = WorldOf(levelId), stage = StageOf(levelId);
-            if (world == 1) return stage < 41 ? 6 : 8;
+            if (world == 1) return stage <= FtueWindowEnd ? 4 : stage < 41 ? 6 : 8;
             return 8 + (stage >= 41 ? 2 : 0);
         }
+
+        /// <summary>
+        /// The extra moves a level's objective earns: every bottle level its <see cref="DropExtraMoves"/>,
+        /// and since variety r1 brought sand inside the FTUE window, an Arrival Cove sand level there
+        /// <see cref="SandFtueExtraMoves"/> (the reference player washes its five patches in about twenty taps).
+        /// </summary>
+        public static int ObjectiveMoves(int world, int stage)
+        {
+            var objective = ObjectiveFor(world, stage);
+            if (objective == LevelObjective.Drop) return DropExtraMoves;
+            if (objective == LevelObjective.Sand && world == 1 && stage <= FtueWindowEnd) return SandFtueExtraMoves;
+            return 0;
+        }
+
+        /// <summary>The extra moves an Arrival Cove sand level inside the FTUE window runs.</summary>
+        public const int SandFtueExtraMoves = 6;
 
         /// <summary>A Drop level's move budget runs this much longer: every bottle has a journey
         /// to make as well as a score to reach, and the target is calibrated inside this budget.</summary>

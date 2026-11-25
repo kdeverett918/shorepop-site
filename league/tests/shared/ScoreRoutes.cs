@@ -57,8 +57,13 @@ internal static class ScoreRoutes
         return distance;
     }
 
-    /// <summary>Goal units one action completed: props freed, bottles landed and sand washed.</summary>
-    private static int GoalUnits(MoveResult result) { return result.PropsCollected + result.BottlesCollected + result.SandWashed; }
+    /// <summary>
+    /// Goal units one action completed: what the board owed before it less what it owes after. On a prop,
+    /// bottle or sand level that is exactly the props freed, bottles landed and sand washed (none of those
+    /// goals can be over-collected), so those routes are bit-identical to the ones the per-kind count made;
+    /// variety r1's colour, crate and ice orders count the same way.
+    /// </summary>
+    private static int GoalUnits(int owedBefore, BoardModel after) { return owedBefore - Owed(after); }
 
     public static LevelDefinition WithTarget(LevelDefinition definition, int targetScore)
     {
@@ -149,10 +154,11 @@ internal static class ScoreRoutes
             List<BoardPosition> legal = board.GetLegalMoves();
             if (legal.Count == 0) break;
             int best = int.MinValue; BoardPosition chosen = legal[0];
+            int owed = Owed(board);
             foreach (BoardPosition move in legal)
             {
                 MoveResult result = board.Tap(move.X, move.Y);
-                int worth = result.ScoreDelta + PropBounty * GoalUnits(result);
+                int worth = result.ScoreDelta + PropBounty * GoalUnits(owed, board);
                 if (worth > best) { best = worth; chosen = move; }
                 board.Undo();
             }
@@ -186,6 +192,7 @@ internal static class ScoreRoutes
                 if (board.Status != GameStatus.Playing) continue;
                 var options = new List<Option>();
                 int distanceBefore = BottleDistance(node.Snapshot);
+                int owedBefore = node.Owed;
                 foreach (BoardPosition move in board.GetLegalMoves())
                 {
                     MoveResult result = board.Tap(move.X, move.Y);
@@ -193,7 +200,7 @@ internal static class ScoreRoutes
                     // The branch cut ranks a bottle lowered as goal progress, or the tap that brings
                     // one down is pruned before the beam can see where it leads.
                     int lowered = distanceBefore - BottleDistance(after);
-                    options.Add(new Option(move.X + "," + move.Y, result.ScoreDelta, GoalUnits(result), after, lowered));
+                    options.Add(new Option(move.X + "," + move.Y, result.ScoreDelta, GoalUnits(owedBefore, board), after, lowered));
                     board.Undo();
                 }
                 options.Sort(CompareOptions);

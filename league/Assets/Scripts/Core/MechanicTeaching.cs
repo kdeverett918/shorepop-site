@@ -140,6 +140,14 @@ namespace BloomHarbor
         public static MechanicPractice Practice(MechanicLesson kind) => new MechanicPractice(kind);
 
         /// <summary>
+        /// The Big Wave practice's meter, in charge (owner play test, Play 1.0 (19): "the sample doesn't
+        /// show what creates big wave"). The practice board starts this far short of full, so the player
+        /// fills it with a few small clears, one charge per cleared tile, before the wave breaks: cause,
+        /// then effect, through the real rules. The sheet draws one slot per charge.
+        /// </summary>
+        public const int WaveLessonCharge = 8;
+
+        /// <summary>
         /// The fresh-save quick start, in order: match, make a rocket, fire it. The last step names the
         /// row rocket, but it is played on the board the second step left (<see cref="ContinueQuickStart"/>),
         /// so its lesson follows the rocket the player actually made.
@@ -223,8 +231,9 @@ namespace BloomHarbor
                 level.Blockers.Add(new BlockerDefinition(2,1){Sand=1});
                 level.Goals.Add(new GoalDefinition(GoalType.Sand,2));
             }
-            // The meter two short of full: the marked pair's tap breaks the wave through the real rules.
-            if(kind==MechanicLesson.Wave){level.WaveEnabled=true;level.InitialWaveCharge=BoardModel.WaveCapacity-2;}
+            // The meter WaveLessonCharge short of full: a few marked clears fill it, and the one that
+            // tops it up breaks the wave through the real rules.
+            if(kind==MechanicLesson.Wave){level.WaveEnabled=true;level.InitialWaveCharge=BoardModel.WaveCapacity-MechanicTeaching.WaveLessonCharge;}
             Board=BoardModel.NewLevel(level);
             if(kind>=MechanicLesson.RocketH && kind<=MechanicLesson.Prism) Board.Cells[1,1].Special=(SpecialType)(int)kind;
             if(kind==MechanicLesson.Shell) Board.Cells[1,1].Special=SpecialType.RocketV;
@@ -241,7 +250,38 @@ namespace BloomHarbor
                 :Kind==MechanicLesson.Breeze?Board.UseBreeze(true):Board.Tap(x,y);
             if(result.Accepted)LastMove=result;
             if(MechanicTeaching.Demonstrated(Kind,result,tapped))Completed=true;
+            // The wave practice takes several taps: each one that leaves the meter short re-aims the
+            // outline at the board's smallest legal group, so every tap adds a little and the player
+            // watches the meter climb before it breaks.
+            if(Kind==MechanicLesson.Wave && result.Accepted && !Completed)AimAtSmallestGroup();
             return result;
+        }
+
+        /// <summary>The Big Wave meter's slots filled so far, 0 to <see cref="MechanicTeaching.WaveLessonCharge"/>
+        /// (always full once the wave has broken). Zero for every other practice.</summary>
+        public int WaveSlotsFilled
+        {
+            get
+            {
+                if(Kind!=MechanicLesson.Wave || Board==null)return 0;
+                if(Completed)return MechanicTeaching.WaveLessonCharge;
+                int start=BoardModel.WaveCapacity-MechanicTeaching.WaveLessonCharge;
+                return Math.Max(0,Math.Min(MechanicTeaching.WaveLessonCharge,Board.WaveCharge-start));
+            }
+        }
+
+        void AimAtSmallestGroup()
+        {
+            int best=int.MaxValue,bestX=-1,bestY=-1;
+            foreach(var p in Board.GetLegalMoves())
+            {
+                var cell=Board.Cells[p.X,p.Y];
+                if(cell==null || cell.Special!=SpecialType.None)continue;
+                int size=Board.GetGroup(p.X,p.Y).Count;
+                if(size>=2 && size<best){best=size;bestX=p.X;bestY=p.Y;}
+            }
+            if(bestX<0)foreach(var p in Board.GetLegalMoves()){bestX=p.X;bestY=p.Y;break;}
+            if(bestX>=0){TargetX=bestX;TargetY=bestY;}
         }
     }
 }

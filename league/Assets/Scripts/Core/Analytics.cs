@@ -13,6 +13,7 @@ namespace BloomHarbor
     {
         public const string SessionStart = "session_start";
         public const string SessionEnd = "session_end";
+        public const string InstallMetadata = "install_metadata";
 
         public const string LevelStart = "level_start";
         public const string LevelEnd = "level_end";
@@ -122,13 +123,54 @@ namespace BloomHarbor
         // boot, never rewarded) and its answer, each reminder put on the device, and each one tapped.
         public const string NotificationPermissionPrompted = "notification_permission_prompted";
         public const string NotificationPermissionGranted = "notification_permission_granted";
+        public const string NotificationPermissionDenied = "notification_permission_denied";
         public const string NotificationScheduled = "notification_scheduled";
         public const string NotificationOpened = "notification_opened";
+        // WO-20261111-353: OS-verified notification delivery read back from active shade StatusBarNotifications.
+        public const string PushFired = "push_fired";
+        // Fleet standard v3 (WO-20261104-108): the in-app store review ask lifecycle (requested, launched, failed, skipped).
+        public const string ReviewPrompt = "review_prompt";
+        // Wave 4 attribution, remote difficulty and restore-purchases telemetry.
+        public const string AdValueMilestone = "ad_value_milestone";
+        public const string MetaCombo = "meta_combo";
+        public const string DifficultyAssigned = "difficulty_assigned";
+        public const string DifficultyFallback = "difficulty_fallback";
+        public const string RestorePurchasesResult = "restore_purchases_result";
+
+        // Canonical v4 lifecycle, FTUE, retention and VTE record events (WO-20261020-93).
+        public const string FirstOpen = "first_open";
+        public const string TutorialStart = "tutorial_start";
+        public const string TutorialComplete = "tutorial_complete";
+        public const string FirstPurchase = "first_purchase";
+        public const string D1Return = "d1_return";
+        public const string AttributionMilestone = "attribution_milestone";
+
+        // Day-0 signal stack atomic events (WO-20261114-83, game-launch-ops ref 36 §A).
+        public const string InterstitialSurvived = "interstitial_survived";
+        public const string StoreSurfaceClose = "store_surface_close";
+        public const string AudioToggle = "audio_toggle";
+        public const string MetaAction = "meta_action";
+        public const string ResourceEmpty = "resource_empty";
+
+        // Day-0 profile, golden event (WO-20261116-69 / 0ba3d3ae), composites and shadow value (ref 36 §B, §C, §I).
+        public const string D0Profile = "d0_profile";
+        public const string D0Golden = "d0_golden";
+        public const string D0ReturnProgress = "d0_return_progress";
+        public const string D0FrictionSurvived = "d0_friction_survived";
+        public const string D0RvReturn = "d0_rv_return";
+        public const string D0ShopperIntent = "d0_shopper_intent";
+        public const string D0Value = "d0_value";
+
+        // Revenue Pulse analytics rows (WO-20261119-63 / 95523951, game-launch-ops ref 37).
+        public const string PulseOpen = "pulse_open";
+        public const string RevPulseBuy = "rev_pulse_buy";
+        public const string QualRung = "qual_rung";
+        public const string RevUnit = "rev_unit";
 
         /// <summary>Every event above, for the suite and for the validator.</summary>
         public static readonly string[] All =
         {
-            SessionStart, SessionEnd,
+            SessionStart, SessionEnd, InstallMetadata,
             LevelStart, LevelEnd, LevelQuit, CoastCleared,
             EconomyEarn, EconomySpend,
             BoosterReserved, BoosterSpent,
@@ -148,7 +190,13 @@ namespace BloomHarbor
             ConsentResult, AdRevenue,
             OfferShown, OfferAccepted, OfferDismissed, CheckoutStart,
             ContinueOffered, ContinueUsed, DeficitBridgeShown, ShellBankDeposit, ShellBankBreak,
-            NotificationPermissionPrompted, NotificationPermissionGranted, NotificationScheduled, NotificationOpened,
+            NotificationPermissionPrompted, NotificationPermissionGranted, NotificationPermissionDenied, NotificationScheduled, NotificationOpened, PushFired,
+            ReviewPrompt,
+            AdValueMilestone, MetaCombo, DifficultyAssigned, DifficultyFallback, RestorePurchasesResult,
+            FirstOpen, TutorialStart, TutorialComplete, FirstPurchase, D1Return, AttributionMilestone,
+            InterstitialSurvived, StoreSurfaceClose, AudioToggle, MetaAction, ResourceEmpty,
+            D0Profile, D0Golden, D0ReturnProgress, D0FrictionSurvived, D0RvReturn, D0ShopperIntent, D0Value,
+            PulseOpen, RevPulseBuy, QualRung, RevUnit,
         };
     }
 
@@ -204,18 +252,24 @@ namespace BloomHarbor
         static AnalyticsSchema()
         {
             Define(AnalyticsEvents.SessionStart, TR("kind"), IR("days_since_install"), I("sessions"), I("clears"), I("lives"),
-                T("difficulty_schedule"));
-            Define(AnalyticsEvents.SessionEnd, TR("reason"), IR("seconds"), I("clears"), I("lives"));
+                T("difficulty_schedule"), I("gap_s"), I("local_hour"), I("local_min"), T("installer_package"),
+                T("traffic_type"), T("test_traffic_source"), T("geo_gate_status"), T("geo_gate_source"));
+            Define(AnalyticsEvents.SessionEnd, TR("reason"), IR("seconds"), I("clears"), I("lives"), I("duration_s"), I("active_s"));
+            Define(AnalyticsEvents.InstallMetadata, TR("reason"));
 
             Define(AnalyticsEvents.LevelStart, IR("level"), I("coast"), IR("attempt"), I("stars_best"), I("lives"),
-                I("boosters"), I("booster_coins"), I("tailwind_tier"), I("streak"), T("difficulty_tier"));
+                I("boosters"), I("booster_coins"), I("tailwind_tier"), I("streak"), T("difficulty_tier"),
+                B("voluntary_continuation"), I("retry_index"), T("attempt_content_fingerprint"), T("diff_arm"), I("level_id"), B("revisit"), I("mercy_moves"));
             Define(AnalyticsEvents.LevelEnd, IR("level"), TR("result"), I("stars"), I("score"), I("target"),
-                I("moves_left"), I("coins"), B("new_best"), I("attempt"), I("boosters"), I("tailwind_tier"), I("coast"));
-            Define(AnalyticsEvents.LevelQuit, IR("level"), I("moves_left"), I("score"), I("target"), I("attempt"));
+                I("moves_left"), I("coins"), B("new_best"), I("attempt"), I("boosters"), I("tailwind_tier"), I("coast"),
+                I("retry_index"), T("attempt_content_fingerprint"), I("level_id"), N("duration_s"), I("near_miss"), N("remaining_goal_pct"), B("revisit"));
+            Define(AnalyticsEvents.LevelQuit, IR("level"), I("moves_left"), I("score"), I("target"), I("attempt"),
+                T("end_reason"), I("retry_index"), I("moves_used"), I("level_id"), N("duration_s"));
             Define(AnalyticsEvents.CoastCleared, IR("coast"), I("stars"), I("coins"));
 
             Define(AnalyticsEvents.EconomyEarn, TR("source"), TR("currency"), IR("amount"), I("balance"), I("level"), I("stars"));
-            Define(AnalyticsEvents.EconomySpend, TR("sink"), TR("currency"), IR("amount"), I("balance"), I("level"), I("tickets"));
+            Define(AnalyticsEvents.EconomySpend, TR("sink"), TR("currency"), IR("amount"), I("balance"), I("level"), I("tickets"),
+                I("voluntary"), I("in_tutorial"));
 
             Define(AnalyticsEvents.BoosterReserved, TR("booster"), B("selected"), I("cost"), I("level"));
             Define(AnalyticsEvents.BoosterSpent, IR("mask"), I("coins"), I("credited"), I("level"));
@@ -223,12 +277,13 @@ namespace BloomHarbor
             Define(AnalyticsEvents.LivesDepleted, IR("level"), I("coast"));
             Define(AnalyticsEvents.LivesRefilled, I("lives"), TR("source"));
 
-            Define(AnalyticsEvents.StoreOpened, I("clears"), I("gems"), I("coins"));
+            Define(AnalyticsEvents.StoreOpened, I("clears"), I("gems"), I("coins"), T("surface"), T("trigger"),
+                T("geo_gate_status"), T("geo_gate_source"));
             Define(AnalyticsEvents.PurchaseStarted, TR("product"), T("attempt"));
             // Price and currency come as a pair or not at all (RevenueReport); a restore carries neither.
             // transaction_ref is a truncated SHA-256 digest, never the store's transaction id.
             Define(AnalyticsEvents.PurchaseCompleted, TR("product"), T("product_id"), I("price_minor_units"), T("price_currency"), B("sandbox"),
-                T("transaction_ref"));
+                T("transaction_ref"), T("order_verdict"));
             Define(AnalyticsEvents.PurchaseFailed, TR("product"), TR("stage"), T("reason"));
 
             Define(AnalyticsEvents.AdOffered, TR("placement"), T("state"), B("in_game"));
@@ -243,7 +298,7 @@ namespace BloomHarbor
             Define(AnalyticsEvents.TutorialStep, IR("bit"), I("clears"), T("lesson"));
             Define(AnalyticsEvents.HarborProjectBought, TR("kind"), I("index"), I("coast"), I("cost"), I("balance"));
 
-            Define(AnalyticsEvents.FtueStep, TR("step"), I("step_index"), I("level"), I("session_seconds"), I("days_since_install"));
+            Define(AnalyticsEvents.FtueStep, TR("step"), I("step_index"), I("level"), I("session_seconds"), I("days_since_install"), T("step_name"));
 
             Define(AnalyticsEvents.StreakChanged, I("level"), I("from"), I("to"), I("tier"), T("result"));
             Define(AnalyticsEvents.ChestOpened, TR("kind"), I("index"), I("coins"), I("overflow_coins"), I("tickets"),
@@ -280,11 +335,12 @@ namespace BloomHarbor
 
             Define(AnalyticsEvents.ConsentResult, TR("region_class"), BR("analytics_on"), TR("source"));
             Define(AnalyticsEvents.AdRevenue, NR("revenue_usd"), TR("network"), TR("format"), T("placement"),
-                T("ad_unit"), T("precision"), B("test_ad"));
+                T("ad_unit"), T("precision"), B("test_ad"), T("dsp_name"), T("creative_id"),
+                B("unrequested"), N("seconds_since_own_ad"), I("unrequested_count"));
 
-            Define(AnalyticsEvents.OfferShown, TR("offer"), TR("placement"));
+            Define(AnalyticsEvents.OfferShown, TR("offer"), TR("placement"), B("rendered"));
             Define(AnalyticsEvents.OfferAccepted, TR("offer"), TR("placement"));
-            Define(AnalyticsEvents.OfferDismissed, TR("offer"), TR("placement"));
+            Define(AnalyticsEvents.OfferDismissed, TR("offer"), TR("placement"), I("open_ms"));
             // product_id is the store catalogue id every buyer shares (the purchase_completed exemption).
             Define(AnalyticsEvents.CheckoutStart, TR("product_id"), TR("placement"));
             Define(AnalyticsEvents.ContinueOffered, IR("attempt_continue_index"), IR("price_gems"), TR("source"), I("level"));
@@ -295,8 +351,60 @@ namespace BloomHarbor
 
             Define(AnalyticsEvents.NotificationPermissionPrompted, TR("stage"), TR("trigger"));
             Define(AnalyticsEvents.NotificationPermissionGranted, TR("stage"), TR("trigger"));
+            Define(AnalyticsEvents.NotificationPermissionDenied, TR("stage"), TR("trigger"));
             Define(AnalyticsEvents.NotificationScheduled, TR("kind"), IR("hours_ahead"));
             Define(AnalyticsEvents.NotificationOpened, TR("kind"));
+            Define(AnalyticsEvents.PushFired, IR("notif_id"), TR("slug"), IR("delay_s"), TR("app_state"));
+            Define(AnalyticsEvents.ReviewPrompt, TR("stage"), TR("context"), T("reason"), I("ask_index"), I("level"),
+                I("day_since_install"), I("session_index"));
+            Define(AnalyticsEvents.AdValueMilestone, TR("milestone"), IR("threshold_micros"), I("cumulative_micros"));
+            Define(AnalyticsEvents.MetaCombo, IR("clears"), I("rewarded_count"), I("sessions"), B("is_payer"));
+            Define(AnalyticsEvents.DifficultyAssigned, TR("diff_arm"), TR("diff_version"), T("diff_cell"), B("holdout"));
+            Define(AnalyticsEvents.DifficultyFallback, TR("reason"), T("diff_arm"));
+            Define(AnalyticsEvents.RestorePurchasesResult, TR("outcome"), I("restored_count"));
+
+            // Canonical v4 lifecycle, FTUE, retention and VTE records.
+            Define(AnalyticsEvents.FirstOpen, T("installer_package"), T("traffic_type"), T("test_traffic_source"),
+                T("internal_reason"), I("notif_pregranted"));
+            Define(AnalyticsEvents.TutorialStart, I("level"));
+            Define(AnalyticsEvents.TutorialComplete, I("level"), N("hours_since_install"));
+            Define(AnalyticsEvents.FirstPurchase, T("product_id"), I("price_minor_units"), T("price_currency"),
+                T("transaction_ref"), T("order_verdict"));
+            Define(AnalyticsEvents.D1Return, N("hours_since_install"), I("sessions"));
+            Define(AnalyticsEvents.AttributionMilestone, TR("name"), I("rung_micros"), N("fact_h"), I("def_version"), I("cumulative_micros"));
+
+            // Day-0 signal stack atomic events (PostHog-only in ref 36; admitted on spine so coverage & consent match).
+            Define(AnalyticsEvents.InterstitialSurvived, TR("placement"), IR("gap_ms"), TR("next"));
+            Define(AnalyticsEvents.StoreSurfaceClose, TR("surface"), IR("dwell_ms"), IR("voluntary"));
+            Define(AnalyticsEvents.AudioToggle, TR("channel"), IR("on"));
+            Define(AnalyticsEvents.MetaAction, TR("kind"), TR("item"));
+            Define(AnalyticsEvents.ResourceEmpty, TR("resource"), TR("via"), I("level"));
+
+            // Day-0 profile, golden event, composites and shadow value (full maps ride on PostHog via RichProperties).
+            Define(AnalyticsEvents.D0Profile, IR("snap_v"), IR("snap_seq"), NR("snap_h"), IR("final"),
+                I("sessions_n"), I("returns_n"), I("clears_n"), I("max_level"), I("rv_granted_n"),
+                I("val_ad_micros"), I("val_iap_net_micros"), I("val_ad_unrequested_micros"), I("iap_orders_n"),
+                I("ad_exempt"), I("legacy_fired"), T("acq_objective"), T("ad_arm"));
+            Define(AnalyticsEvents.D0Golden, IR("rung"), IR("def_v"), NR("h"), IR("value_micros"), IR("on_slot"),
+                T("variant"), T("branch"), T("acq_objective"), T("meta_event"),
+                I("iap_orders_n"), I("val_ad_micros"), I("val_iap_net_micros"), I("val_ad_unrequested_micros"),
+                I("returns_n"), I("max_gap_min"), I("max_level"), I("rv_granted_n"));
+            Define(AnalyticsEvents.D0ReturnProgress, IR("def_v"), T("variant"), TR("branch"), NR("h"), T("acq_objective"),
+                I("returns_n"), I("clears_n"), I("max_level"));
+            Define(AnalyticsEvents.D0FrictionSurvived, IR("def_v"), T("variant"), TR("branch"), NR("h"), T("acq_objective"),
+                I("near_miss_recoveries_n"), I("clears_n"), I("max_level"), I("fails_n"), I("post_fail_clears_n"));
+            Define(AnalyticsEvents.D0RvReturn, IR("def_v"), T("variant"), TR("branch"), NR("h"), T("acq_objective"),
+                I("rv_granted_n"), I("returns_n"), I("max_level"));
+            Define(AnalyticsEvents.D0ShopperIntent, IR("def_v"), T("variant"), TR("branch"), NR("h"), T("acq_objective"),
+                I("returns_n"), I("store_voluntary_n"), I("offer_dwell_n"), I("empty_plus_taps_n"),
+                I("sink_spend_n"), N("starter_depletion_pct"), I("iap_orders_n"));
+            Define(AnalyticsEvents.D0Value, IR("def_v"), NR("value_usd"), I("val_ad_micros"), I("val_iap_micros"), T("acq_objective"));
+
+            // Revenue Pulse analytics rows (contracts/rev-pulse 95523951).
+            Define(AnalyticsEvents.PulseOpen, IR("opener"), T("pulse_country"));
+            Define(AnalyticsEvents.RevPulseBuy, IR("seq"), IR("cents"), IR("gate"));
+            Define(AnalyticsEvents.QualRung, IR("rung"), IR("wins"), IR("net_cents"), T("pulse_country"), NR("age_h"));
+            Define(AnalyticsEvents.RevUnit, IR("unit_n"), IR("net_cents"), T("pulse_country"), NR("age_h"));
         }
 
         /// <summary>True when the event has a declared parameter set (every allowlisted one does).</summary>
@@ -341,11 +449,36 @@ namespace BloomHarbor
     }
 
     /// <summary>One reported event: a name from the allowlist, a UTC stamp and flat parameters.</summary>
+    [Serializable]
+    public sealed class AnalyticsOrigin
+    {
+        public string build = "";
+        public string versionCode = "";
+        public string buildSha = "";
+        public string appVersion = "";
+        public string contentVersion = "";
+        public string contentDigest = "";
+        public string rulesVersion = "";
+        public string configVersion = "";
+        public bool buildDirty;
+        public int levelReached;
+        public int sessionNumber;
+        public long installUtcTicks;
+        public bool installKnown;
+    }
+
     public sealed class AnalyticsEvent
     {
         public string Name;
         public DateTime UtcTime;
+        // Optional checkout-time snapshot. No store receipt or personal data is retained.
+        public AnalyticsOrigin Origin;
         public readonly Dictionary<string, string> Parameters = new Dictionary<string, string>(StringComparer.Ordinal);
+        /// <summary>Optional PostHog-only rich properties (e.g. full d0_profile / d0_golden maps, semicolon-formatted params).
+        /// Ignored by typed UGS/Firebase spine mappers.</summary>
+        public Dictionary<string, object> RichProperties;
+        /// <summary>Optional PostHog person properties ($set) attached to this event (WO-20261029-64).</summary>
+        public Dictionary<string, object> PersonSet;
 
         public override string ToString()
         {
@@ -353,6 +486,18 @@ namespace BloomHarbor
             foreach (var pair in Parameters) builder.Append(' ').Append(pair.Key).Append('=').Append(pair.Value);
             return builder.ToString();
         }
+    }
+
+    /// <summary>
+    /// Durable pre-consent hold store (WO-20261114-1415): persists events held before UMP resolves so
+    /// boot one-shots (first_open, d1_return, tutorial_start) survive a kill before consent and never
+    /// re-fire on relaunch, while being wiped immediately on explicit consent refusal or after flush.
+    /// </summary>
+    public interface IPreConsentHoldStore
+    {
+        List<AnalyticsEvent> Load();
+        bool Save(IReadOnlyList<AnalyticsEvent> events);
+        void Clear();
     }
 
     /// <summary>
@@ -392,20 +537,17 @@ namespace BloomHarbor
     ///   * **Nothing here may throw.** A sink is third-party code on a background thread on a phone
     ///     model nobody tested. An exception escaping analytics must never reach the game loop, so
     ///     every dispatch is guarded and failures are counted, not raised.
-    ///   * **Nothing is reported without consent.** Events are buffered in memory before consent is
-    ///     answered and only released once it is granted, so a first session is not silently lost
-    ///     and a refusal does not leak it either. The buffer is never written to disk.
+    ///   * **Nothing is reported without consent.** Events are buffered before consent is answered
+    ///     (optionally persisted via <see cref="IPreConsentHoldStore"/> so boot one-shots survive a
+    ///     pre-consent kill without re-firing) and released only once granted; a refusal erases the
+    ///     held buffer immediately so nothing leaks.
     ///   * **A name, parameter or value that is not declared is dropped and counted.** A dashboard
     ///     that is quietly missing a metric is worse than one that is obviously broken.
-    ///
-    /// The taxonomy is deliberately about retention and spend — attempts before a win, where lives
-    /// run out, what a coin was spent on — because those are the questions an Android launch has to
-    /// answer in its first fortnight.
     /// </summary>
     public static class Analytics
     {
-        /// <summary>Events held while consent is unanswered. Beyond this the oldest are dropped:
-        /// an unbounded buffer on a device that never answers is a leak, not a feature.</summary>
+        /// <summary>Events held while consent is unanswered. Beyond this the oldest non-boot event
+        /// is dropped so boot one-shots (first_open, d1_return, tutorial_start) cannot be evicted.</summary>
         public const int PendingLimit = 256;
 
         /// <summary>Longest a parameter value may be. Providers truncate silently; this does not.</summary>
@@ -418,10 +560,25 @@ namespace BloomHarbor
         /// </summary>
         public const int ParameterLimit = 20;
 
+        /// <summary>Hard cap on accepted-subscriber notifications drained per entry (WO-20261121-143).</summary>
+        public const int MaxAcceptedDrainPerCall = 128;
+
         static readonly HashSet<string> allowed = new HashSet<string>(AnalyticsEvents.All, StringComparer.Ordinal);
+        static readonly HashSet<string> bootOneShots = new HashSet<string>(StringComparer.Ordinal)
+        {
+            AnalyticsEvents.FirstOpen,
+            AnalyticsEvents.D1Return,
+            AnalyticsEvents.TutorialStart,
+            AnalyticsEvents.TutorialComplete,
+            AnalyticsEvents.FirstPurchase,
+        };
         static readonly List<AnalyticsEvent> pending = new List<AnalyticsEvent>();
+        static readonly List<Action<AnalyticsEvent>> acceptedSubscribers = new List<Action<AnalyticsEvent>>();
+        static readonly Queue<AnalyticsEvent> acceptedQueue = new Queue<AnalyticsEvent>();
         static IAnalyticsSink sink;
+        static IPreConsentHoldStore preConsentStore;
         static bool? consent;
+        static bool notifyingAccepted;
 
         public static int DroppedUnknownName { get; private set; }
         public static int DroppedInvalidParameter { get; private set; }
@@ -432,14 +589,27 @@ namespace BloomHarbor
         public static int SinkFailures { get; private set; }
         public static int Reported { get; private set; }
         public static int PendingCount { get { return pending.Count; } }
+        public static int PendingAcceptedNotifications { get { return acceptedQueue.Count; } }
 
         /// <summary>True once consent has been answered, either way.</summary>
         public static bool ConsentAnswered { get { return consent.HasValue; } }
         public static bool ConsentGranted { get { return consent.HasValue && consent.Value; } }
 
+        /// <summary>Boot one-shots exempt from pre-consent hold-cap eviction (WO-20261114-1415).</summary>
+        public static bool IsBootOneShot(string name)
+        {
+            return name != null && bootOneShots.Contains(name);
+        }
+
         public static void Reset()
         {
-            pending.Clear(); sink = null; consent = null;
+            pending.Clear();
+            acceptedSubscribers.Clear();
+            acceptedQueue.Clear();
+            notifyingAccepted = false;
+            sink = null;
+            preConsentStore = null;
+            consent = null;
             DroppedUnknownName = DroppedInvalidParameter = DroppedSchema = DroppedOverflow = SinkFailures = Reported = 0;
         }
 
@@ -452,14 +622,89 @@ namespace BloomHarbor
             Flush();
         }
 
+        /// <summary>Installs a durable pre-consent hold store (WO-20261114-1415). Restores any held
+        /// rows saved before a prior kill; flushes them if consent is already granted or wipes them
+        /// if consent was refused.</summary>
+        public static void ConfigurePreConsentStore(IPreConsentHoldStore store)
+        {
+            preConsentStore = store;
+            if (store == null) return;
+            if (consent.HasValue && !consent.Value)
+            {
+                ClearPreConsentStore();
+                return;
+            }
+            try
+            {
+                var loaded = store.Load();
+                if (loaded != null && loaded.Count > 0)
+                {
+                    var existingBoot = new HashSet<string>(StringComparer.Ordinal);
+                    for (int i = 0; i < pending.Count; i++)
+                        if (IsBootOneShot(pending[i].Name)) existingBoot.Add(pending[i].Name);
+                    for (int i = 0; i < loaded.Count; i++)
+                    {
+                        var item = loaded[i];
+                        if (item == null || string.IsNullOrEmpty(item.Name) || !allowed.Contains(item.Name)) continue;
+                        if (IsBootOneShot(item.Name) && !existingBoot.Add(item.Name)) continue;
+                        AddPending(item);
+                    }
+                }
+            }
+            catch (Exception) { SinkFailures++; }
+            if (consent.HasValue && consent.Value) Flush();
+        }
+
+        /// <summary>Subscribes to accepted spine events. Callbacks are dispatched iteratively with a
+        /// re-entrancy guard (WO-20261121-143) so publishing inside a subscriber cannot recurse.</summary>
+        public static void SubscribeAccepted(Action<AnalyticsEvent> listener)
+        {
+            if (listener == null || acceptedSubscribers.Contains(listener)) return;
+            acceptedSubscribers.Add(listener);
+        }
+
+        public static void UnsubscribeAccepted(Action<AnalyticsEvent> listener)
+        {
+            if (listener == null) return;
+            acceptedSubscribers.Remove(listener);
+        }
+
+        /// <summary>Drains any accepted-event notifications deferred by the re-entrancy cap.</summary>
+        public static void DrainAcceptedSubscribers()
+        {
+            if (notifyingAccepted || acceptedQueue.Count == 0 || acceptedSubscribers.Count == 0) return;
+            notifyingAccepted = true;
+            try
+            {
+                int drained = 0;
+                while (acceptedQueue.Count > 0 && drained < MaxAcceptedDrainPerCall)
+                {
+                    var ev = acceptedQueue.Dequeue();
+                    drained++;
+                    var snapshot = acceptedSubscribers.ToArray();
+                    for (int i = 0; i < snapshot.Length; i++)
+                    {
+                        try { snapshot[i](ev); }
+                        catch (Exception) { SinkFailures++; }
+                    }
+                }
+            }
+            finally { notifyingAccepted = false; }
+        }
+
         /// <summary>
         /// Records the player's answer. Granting releases whatever was buffered; refusing discards
-        /// it, because an event held from before a refusal is exactly the data a refusal covers.
+        /// it (and wipes any durable pre-consent hold), because an event held from before a refusal
+        /// is exactly the data a refusal covers.
         /// </summary>
         public static void SetConsent(bool granted)
         {
             consent = granted;
-            if (!granted) pending.Clear();
+            if (!granted)
+            {
+                pending.Clear();
+                ClearPreConsentStore();
+            }
             NotifyConsent();
             if (granted) Flush();
         }
@@ -471,35 +716,106 @@ namespace BloomHarbor
         }
 
         /// <summary>
-        /// Reports an event, or drops it and says so in a counter. Returns whether it was accepted,
-        /// which the suite asserts on; no caller is expected to check.
+        /// Reports an event, or drops it and says so in a counter. Returns whether it was accepted
+        /// (including durably held before consent resolves per WO-20261114-1415).
         /// </summary>
         public static bool Track(string name, DateTime utcNow, AnalyticsParameters parameters = null)
         {
+            return TrackWithRich(name, utcNow, parameters, null, null);
+        }
+
+        /// <summary>
+        /// Reports an event with optional PostHog-only rich properties and/or $set person properties.
+        /// Validates the spine schema identically to <see cref="Track"/>.
+        /// </summary>
+        public static bool TrackWithRich(string name, DateTime utcNow, AnalyticsParameters parameters,
+            IDictionary<string, object> richProperties = null, IDictionary<string, object> personSet = null)
+        {
             AnalyticsEvent reported;
             if (!TryBuild(name, utcNow, parameters, out reported)) return false;
-            if (consent.HasValue && consent.Value && sink != null) return Dispatch(reported);
+            if (richProperties != null && richProperties.Count > 0)
+                reported.RichProperties = new Dictionary<string, object>(richProperties, StringComparer.Ordinal);
+            if (personSet != null && personSet.Count > 0)
+                reported.PersonSet = new Dictionary<string, object>(personSet, StringComparer.Ordinal);
+
+            if (consent.HasValue && consent.Value && sink != null)
+            {
+                bool sent = Dispatch(reported);
+                if (sent) NotifyAccepted(reported);
+                return sent;
+            }
             if (consent.HasValue && !consent.Value) return false;
-            if (pending.Count >= PendingLimit) { pending.RemoveAt(0); DroppedOverflow++; }
-            pending.Add(reported);
+            AddPending(reported);
+            PersistPreConsentHold();
+            NotifyAccepted(reported);
             return true;
         }
 
         /// <summary>The caller retains its outbox unless the durable sink accepts locally. Unknown
         /// consent, an unavailable provider, storage failure or capacity backpressure returns false;
         /// this path never enters the spine's memory-only pending queue.</summary>
-        public static bool TrackDurably(string name, DateTime utcNow, AnalyticsParameters parameters = null)
+        public static bool TrackDurably(string name, DateTime utcNow, AnalyticsParameters parameters = null, AnalyticsOrigin origin = null)
+        {
+            return TrackDurablyWithRich(name, utcNow, parameters, origin, null, null);
+        }
+
+        public static bool TrackDurablyWithRich(string name, DateTime utcNow, AnalyticsParameters parameters,
+            AnalyticsOrigin origin, IDictionary<string, object> richProperties, IDictionary<string, object> personSet)
         {
             AnalyticsEvent reported;
             if (!TryBuild(name, utcNow, parameters, out reported) || !ConsentGranted) return false;
+            reported.Origin = origin;
+            if (richProperties != null && richProperties.Count > 0)
+                reported.RichProperties = new Dictionary<string, object>(richProperties, StringComparer.Ordinal);
+            if (personSet != null && personSet.Count > 0)
+                reported.PersonSet = new Dictionary<string, object>(personSet, StringComparer.Ordinal);
             var durable = sink as IDurableAnalyticsSink;
             if (durable == null) return false;
             try
             {
                 if (!durable.SendDurably(reported)) return false;
-                Reported++; return true;
+                Reported++;
+                NotifyAccepted(reported);
+                return true;
             }
             catch (Exception) { SinkFailures++; return false; }
+        }
+
+        static void AddPending(AnalyticsEvent reported)
+        {
+            if (pending.Count >= PendingLimit)
+            {
+                int evictIndex = -1;
+                for (int i = 0; i < pending.Count; i++)
+                {
+                    if (!IsBootOneShot(pending[i].Name)) { evictIndex = i; break; }
+                }
+                if (evictIndex < 0) evictIndex = 0;
+                pending.RemoveAt(evictIndex);
+                DroppedOverflow++;
+            }
+            pending.Add(reported);
+        }
+
+        static void PersistPreConsentHold()
+        {
+            if (preConsentStore == null) return;
+            try { preConsentStore.Save(pending); }
+            catch (Exception) { SinkFailures++; }
+        }
+
+        static void ClearPreConsentStore()
+        {
+            if (preConsentStore == null) return;
+            try { preConsentStore.Clear(); }
+            catch (Exception) { SinkFailures++; }
+        }
+
+        static void NotifyAccepted(AnalyticsEvent reported)
+        {
+            if (acceptedSubscribers.Count == 0 || reported == null) return;
+            acceptedQueue.Enqueue(reported);
+            if (!notifyingAccepted) DrainAcceptedSubscribers();
         }
 
         static bool TryBuild(string name, DateTime utcNow, AnalyticsParameters parameters, out AnalyticsEvent reported)
@@ -566,6 +882,7 @@ namespace BloomHarbor
             if (sink == null || !consent.HasValue || !consent.Value) return;
             for (int i = 0; i < pending.Count; i++) Dispatch(pending[i]);
             pending.Clear();
+            ClearPreConsentStore();
         }
 
         static void NotifyConsent()

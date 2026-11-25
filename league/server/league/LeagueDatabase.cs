@@ -57,7 +57,7 @@ public static class LeagueDatabase
         if (connection is NpgsqlConnection)
         {
             // The fixed allowlist is SQL owned here; no request-controlled identifiers are interpolated.
-            sql = Regex.Replace(sql, @"\b(configuration|attempts|level_bests|weekly_levels|weekly_totals)\b", "shorepop_league.$1");
+            sql = Regex.Replace(sql, @"\b(configuration|attempts|level_bests|weekly_levels|weekly_totals|erased_subjects)\b", "shorepop_league.$1");
             sql = sql.Replace("MAX(score,excluded.score)", "GREATEST(score,excluded.score)");
             // ON CONFLICT requires an unambiguous target-table value on PostgreSQL.
             if (sql.Contains("UPDATE SET score=GREATEST"))

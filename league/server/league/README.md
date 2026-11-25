@@ -93,7 +93,8 @@ differently (the Big Wave adds score on every level from 5, and every non-tutori
 recalibrated for it) is therefore refused as `replay_mismatch` or `invalid_evidence` by a server built
 from older Core.
 
-The rules value is now `shorepop-big-wave-v4`, and it must be identical in
+The rules value is now `shorepop-pacing-v5` (2026-11-25, the AAA feel round's pacing: wave meter 45 -> 36,
+longer tutorial, FTUE protection, every target recalibrated; before it `shorepop-big-wave-v4`), and it must be identical in
 `Assets/Scripts/Services/CampaignAttempts.cs` (`RulesVersion`) and `ReplayValidator.cs`. The deploy
 order is fixed:
 
@@ -104,7 +105,10 @@ order is fixed:
 Records are keyed by rules, so the new rules start their own boards. An older client's queued wins
 (rules `shorepop-toy-curriculum-v3`) get a 422 from the new server, and the client files them as
 rejection receipts. The client never queues a win from an attempt it resumed under the prior rules
-(`CampaignAttempts.LeagueCanRank`).
+(`CampaignAttempts.LeagueCanRank`). The same holds for v4 wins after v5: a v4 client's queued wins get a 422
+from a v5 server. An attempt that started with fast mercy's extra moves (`mercyMoves`, 2026-11-25) is never
+queued either: its board is not the catalog board the server replays, so `LeagueCanRank` keeps it out
+rather than letting a mercy win fail validation.
 
 ## Build, local checks and deployment preparation
 

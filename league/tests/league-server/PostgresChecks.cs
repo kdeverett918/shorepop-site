@@ -47,6 +47,7 @@ internal static partial class Program
         var db = New(cfg);
         postgresTransientRetries = 0;
         string prefix = "verifyLeague" + Guid.NewGuid().ToString("N");
+        var erasurePlayers = new List<string>();
         int firstScenario = scenarios, firstAssertion = assertions;
         bool passed = false, cleaned = false;
         try
@@ -152,6 +153,7 @@ internal static partial class Program
                 Check(PgPlan(connection, transaction, "SELECT player,score FROM shorepop_league.weekly_totals WHERE week=@week AND rules=@rules AND category=@category AND score>0 ORDER BY score DESC,player LIMIT 7 OFFSET 100", fixture.Attempt.StableSlot).Contains("weekly_rank", StringComparison.Ordinal));
                 transaction.Rollback();
             });
+            await PostgresErasureChecks(cfg, db, prefix, fixture, other, erasurePlayers);
             passed = true;
         }
         finally
@@ -163,13 +165,21 @@ internal static partial class Program
                 using var command = new NpgsqlCommand("DELETE FROM shorepop_league." + table + " WHERE player LIKE @prefix", connection, transaction);
                 command.Parameters.AddWithValue("prefix", prefix + "%"); command.ExecuteNonQuery();
             }
+            foreach (string player in erasurePlayers)
+            {
+                using var command = new NpgsqlCommand("DELETE FROM shorepop_league.erased_subjects WHERE subject_hash=@hash", connection, transaction);
+                command.Parameters.AddWithValue("hash", PostgresErasureHash(cfg.ProjectId, player));
+                command.ExecuteNonQuery();
+            }
             transaction.Commit();
-            cleaned = PlayerTables.All(table => PgCountPrefix(cfg, table, prefix) == 0);
+            cleaned = PlayerTables.All(table => PgCountPrefix(cfg, table, prefix) == 0) &&
+                erasurePlayers.All(player => PgTombstoneCount(cfg, player) == 0);
             Check(cleaned);
             File.WriteAllText(Path.Combine(root, "postgres.json"), JsonSerializer.Serialize(new {
                 passed, database = VerifierDatabase, schema = "shorepop_league", projectId = ProductionProject,
                 scenarios = scenarios - firstScenario, assertions = assertions - firstAssertion,
                 cleanup = cleaned, transientStorageRetries = postgresTransientRetries,
+                erasureSubjectsCleaned = erasurePlayers.Count,
                 concurrency = "20 simultaneous durable attempts; transient pool/storage failures retried with unchanged evidence within 90 seconds",
                 fixtureScope = "Unique test player prefix; no production database writes",
                 authentication = "Repository tests only; no deployed bearer acceptance claimed"

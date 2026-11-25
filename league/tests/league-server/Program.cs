@@ -223,6 +223,7 @@ internal static partial class Program
             await Task.WhenAll(distinct.Select(win => Task.Run(() => new LeagueRepository(cfg).Submit("playerA", win, Now))));
             Check(Count(cfg, "attempts") == 13 && db.Weekly("playerA", 7, Now).WeeklyScore == fixture.Score);
         });
+        SqliteErasureChecks(fixture, other);
         await TestAsync("JWT signature issuer expiry project subject algorithm and JWKS cache", Authentication);
         await TestAsync("forced JWKS refresh failure remains closed until successful recovery", AuthenticationRefreshRecovery);
         await TestAsync("real HTTP unconfigured 503 and configured unauthenticated 401", HttpGates);

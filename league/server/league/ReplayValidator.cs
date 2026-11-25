@@ -6,7 +6,7 @@ public static class ReplayValidator
 {
     // Must equal CampaignAttempts.RulesVersion, and this server must run the same Core as the client
     // that sends it: deploy it before a client with new board rules ships (README.md, deploy order).
-    public const string RulesVersion = "shorepop-big-wave-v4";
+    public const string RulesVersion = "shorepop-pacing-v5";
     public const int MaximumActions = 2000;
     public static void Validate(CampaignWin win, DateTime receivedUtc) => Validate(win, receivedUtc, false);
 

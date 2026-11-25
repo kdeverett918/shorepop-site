@@ -561,4 +561,123 @@ namespace BloomHarbor
             return toTerminal + (cells - terminalCells) / p.TerminalSpeed;
         }
     }
+
+    /// <summary>
+    /// Physical-millimeter touch forgiveness (~7 mm via Screen.dpi) for 8x9 board input (AY-CL16).
+    /// Snaps near-border presses on non-actionable cells to the nearest actionable neighbor within ~7 mm,
+    /// while strictly disabling snapping whenever a targeted ability/booster is armed.
+    /// </summary>
+    public static class BoardTouchForgiveness
+    {
+        public const float ForgivenessMillimeters = 7f;
+
+        public static float RadiusPixels(float screenDpi) =>
+            (ForgivenessMillimeters / 25.4f) * (screenDpi > 0f ? screenDpi : 160f);
+
+        public static bool TryResolveCell(
+            float localX, float localY,
+            float rectWidth, float rectHeight,
+            int cols, int rows,
+            float screenPointsToPixels, float screenDpi,
+            bool boosterArmed,
+            Func<int, int, bool> isActionable,
+            out int resolvedX, out int resolvedY)
+        {
+            resolvedX = -1;
+            resolvedY = -1;
+            if (cols < 1 || rows < 1 || rectWidth <= 0f || rectHeight <= 0f) return false;
+
+            bool inBounds = localX >= 0f && localX < rectWidth && localY >= 0f && localY < rectHeight;
+            int cx = inBounds ? Math.Min(cols - 1, Math.Max(0, (int)Math.Floor(localX / rectWidth * cols))) : -1;
+            int cy = inBounds ? Math.Min(rows - 1, Math.Max(0, (int)Math.Floor(localY / rectHeight * rows))) : -1;
+
+            if (boosterArmed)
+            {
+                if (!inBounds) return false;
+                resolvedX = cx;
+                resolvedY = cy;
+                return true;
+            }
+
+            if (inBounds && isActionable != null && isActionable(cx, cy))
+            {
+                resolvedX = cx;
+                resolvedY = cy;
+                return true;
+            }
+
+            if (isActionable != null)
+            {
+                float maxLocalDist = RadiusPixels(screenDpi) / Math.Max(0.01f, screenPointsToPixels);
+                if (maxLocalDist > 0f)
+                {
+                    float cellW = rectWidth / cols;
+                    float cellH = rectHeight / rows;
+                    int bestX = -1, bestY = -1;
+                    double bestDist = double.MaxValue;
+                    double bestCenterDistSq = double.MaxValue;
+                    for (int iy = 0; iy < rows; iy++)
+                    {
+                        float minY = iy * cellH;
+                        float maxY = (iy + 1) * cellH;
+                        float dy = localY < minY ? minY - localY : (localY > maxY ? localY - maxY : 0f);
+                        if (dy > maxLocalDist) continue;
+                        for (int ix = 0; ix < cols; ix++)
+                        {
+                            if (!isActionable(ix, iy)) continue;
+                            float minX = ix * cellW;
+                            float maxX = (ix + 1) * cellW;
+                            float dx = localX < minX ? minX - localX : (localX > maxX ? localX - maxX : 0f);
+                            if (dx > maxLocalDist) continue;
+                            double dist = Math.Sqrt((double)dx * dx + (double)dy * dy);
+                            if (dist > maxLocalDist) continue;
+                            double cdx = localX - (minX + 0.5f * cellW);
+                            double cdy = localY - (minY + 0.5f * cellH);
+                            double centerDistSq = cdx * cdx + cdy * cdy;
+                            if (dist < bestDist - 1e-5 || (Math.Abs(dist - bestDist) <= 1e-5 && centerDistSq < bestCenterDistSq - 1e-5))
+                            {
+                                bestDist = dist;
+                                bestCenterDistSq = centerDistSq;
+                                bestX = ix;
+                                bestY = iy;
+                            }
+                        }
+                    }
+                    if (bestX >= 0)
+                    {
+                        resolvedX = bestX;
+                        resolvedY = bestY;
+                        return true;
+                    }
+                }
+            }
+
+            if (!inBounds) return false;
+            resolvedX = cx;
+            resolvedY = cy;
+            return true;
+        }
+
+        public static bool IsWithinCellHysteresis(
+            float localX, float localY,
+            float rectWidth, float rectHeight,
+            int cols, int rows,
+            int heldX, int heldY,
+            float screenPointsToPixels, float screenDpi)
+        {
+            if (cols < 1 || rows < 1 || rectWidth <= 0f || rectHeight <= 0f ||
+                heldX < 0 || heldX >= cols || heldY < 0 || heldY >= rows)
+                return false;
+            float maxLocalDist = RadiusPixels(screenDpi) / Math.Max(0.01f, screenPointsToPixels);
+            float cellW = rectWidth / cols;
+            float cellH = rectHeight / rows;
+            float minX = heldX * cellW;
+            float maxX = (heldX + 1) * cellW;
+            float minY = heldY * cellH;
+            float maxY = (heldY + 1) * cellH;
+            float dx = localX < minX ? minX - localX : (localX > maxX ? localX - maxX : 0f);
+            float dy = localY < minY ? minY - localY : (localY > maxY ? localY - maxY : 0f);
+            return Math.Sqrt((double)dx * dx + (double)dy * dy) <= maxLocalDist;
+        }
+    }
 }

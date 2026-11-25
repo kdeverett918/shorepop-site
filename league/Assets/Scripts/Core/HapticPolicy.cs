@@ -78,5 +78,31 @@ namespace BloomHarbor
                 default: return .020;
             }
         }
+
+        /// <summary>Native one-shot duration in milliseconds for each haptic moment.</summary>
+        public static int DurationMilliseconds(HapticMoment moment)
+        {
+            switch (moment)
+            {
+                case HapticMoment.Refusal: return 12;
+                case HapticMoment.Clear: return 20;
+                case HapticMoment.Flourish: return 35;
+                case HapticMoment.Win: return 70;
+                default: return 15;
+            }
+        }
+
+        /// <summary>Android VibrationEffect amplitude (1..255) for each haptic moment.</summary>
+        public static int Amplitude(HapticMoment moment)
+        {
+            switch (moment)
+            {
+                case HapticMoment.Refusal: return 64;
+                case HapticMoment.Clear: return 115;
+                case HapticMoment.Flourish: return 185;
+                case HapticMoment.Win: return 255;
+                default: return 96;
+            }
+        }
     }
 }

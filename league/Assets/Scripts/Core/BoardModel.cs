@@ -58,6 +58,51 @@ namespace BloomHarbor
         {
             get { foreach (var goal in Goals) if (!goal.Complete) return false; return true; }
         }
+        /// <summary>
+        /// Overall 0..99 completion percent toward the limiting win requirement across active collect
+        /// goals and <see cref="TargetScore"/>, so dual-goal boards never overstate completion from one
+        /// axis while the other lags behind.
+        /// </summary>
+        public int LimitingWinPercent() => LimitingWinPercent(Goals, Score, TargetScore);
+        /// <summary>
+        /// Sunk-cost lose-stake completion percent (50..99 when at least halfway on the limiting win
+        /// requirement, else 0). Never exceeds <c>Math.Min(collectPct, scorePct)</c> on dual-goal boards.
+        /// </summary>
+        public int LoseStakeProgressPercent() => LoseStakeProgressPercent(Goals, Score, TargetScore);
+
+        public static int LimitingWinPercent(IList<GoalProgress> goals, int score, int targetScore)
+        {
+            int limiting = int.MaxValue;
+            bool anyRequirement = false;
+            if (goals != null)
+            {
+                for (int i = 0; i < goals.Count; i++)
+                {
+                    var goal = goals[i];
+                    // Variety r1: every goal a board carries is a win condition (colour orders, crates and ice too).
+                    if (goal == null || goal.Target <= 0) continue;
+                    anyRequirement = true;
+                    if (goal.Complete) { limiting = Math.Min(limiting, 100); continue; }
+                    int cleared = Math.Max(0, goal.Target - goal.Remaining);
+                    int collectPct = (int)((long)cleared * 100L / goal.Target);
+                    limiting = Math.Min(limiting, Math.Clamp(collectPct, 0, 99));
+                }
+            }
+            if (targetScore > 0)
+            {
+                anyRequirement = true;
+                int scorePct = score >= targetScore ? 100 : Math.Clamp((int)((long)Math.Max(0, score) * 100L / targetScore), 0, 99);
+                limiting = Math.Min(limiting, scorePct);
+            }
+            if (!anyRequirement || limiting == int.MaxValue) return 0;
+            return Math.Clamp(limiting, 0, 99);
+        }
+
+        public static int LoseStakeProgressPercent(IList<GoalProgress> goals, int score, int targetScore)
+        {
+            int pct = LimitingWinPercent(goals, score, targetScore);
+            return pct >= 50 ? pct : 0;
+        }
         /// <summary>This board's collect goal - props, bottles or sand - or null when it is won by score alone.</summary>
         public GoalProgress CollectGoal
         {
@@ -141,6 +186,16 @@ namespace BloomHarbor
         private BoardModel() { readOnlyAbilityUses = abilityUses.AsReadOnly(); }
 
         /// <summary>
+        /// Constructs a playable board for <paramref name="level"/>, optionally overriding the procedural
+        /// RNG seed when <paramref name="seedOverride"/> is non-zero and <c>level.InitialColors == null</c> (AY-CL17).
+        /// </summary>
+        public BoardModel(LevelDefinition level, int seedOverride = 0) : this()
+        {
+            var created = NewLevel(level, null, unchecked((uint)seedOverride));
+            Restore(created.ExportSnapshot());
+        }
+
+        /// <summary>
         /// The boosters this attempt began with (design/specs/monetization.md section 4a). Never
         /// null; empty for a board created without one. It is carried in the snapshot so a resumed
         /// or replayed run reproduces the same starting board, which is what league score
@@ -148,7 +203,7 @@ namespace BloomHarbor
         /// </summary>
         public BoosterLoadout Boosters { get; private set; }
 
-        public static BoardModel NewLevel(LevelDefinition definition) { return NewLevel(definition, null); }
+        public static BoardModel NewLevel(LevelDefinition definition) { return NewLevel(definition, null, 0u); }
 
         /// <summary>
         /// A level with its pre-level boosters applied. The boosters are applied after the board is
@@ -158,6 +213,11 @@ namespace BloomHarbor
         /// single-argument overload.
         /// </summary>
         public static BoardModel NewLevel(LevelDefinition definition, BoosterLoadout loadout)
+        {
+            return NewLevel(definition, loadout, 0u);
+        }
+
+        public static BoardModel NewLevel(LevelDefinition definition, BoosterLoadout loadout, uint seedOverride)
         {
             if (definition == null) throw new ArgumentNullException("definition");
             if (loadout != null && !BoosterLoadout.IsValidMask(loadout.Mask))
@@ -171,12 +231,15 @@ namespace BloomHarbor
                 definition.InitialWaveCharge < 0 || definition.InitialWaveCharge >= WaveCapacity ||
                 (!definition.WaveEnabled && definition.InitialWaveCharge != 0))
                 throw new ArgumentException("Invalid level dimensions, colors, moves, or target score.");
+            uint effectiveSeed = seedOverride != 0u && definition.InitialColors == null
+                ? seedOverride
+                : (definition.Seed == 0 ? 0x9e3779b9u : definition.Seed);
             var board = new BoardModel
             {
                 Width = definition.Width, Height = definition.Height, LevelId = definition.Id,
                 MovesLeft = definition.Moves, colorCount = definition.ColorCount, TargetScore = definition.TargetScore,
                 MoveBonus = definition.MoveBonus,
-                rngState = definition.Seed == 0 ? 0x9e3779b9u : definition.Seed,
+                rngState = effectiveSeed,
                 BreezeEnabled = definition.BreezeEnabled, creationTierCode = definition.CreationTier + 1, Status = GameStatus.Playing,
                 BreezeCharge = definition.InitialBreezeCharge,
                 WaveEnabled = definition.WaveEnabled, WaveCharge = definition.InitialWaveCharge,
@@ -303,6 +366,50 @@ namespace BloomHarbor
             return board;
         }
 
+        public bool HasLegalMove() { return GetLegalMoves().Count > 0; }
+
+        /// <summary>
+        /// Deterministic 8-hex-char FNV-1a content fingerprint over level rules and current cell state (AY-CL17).
+        /// </summary>
+        public string ContentFingerprint()
+        {
+            uint hash = 2166136261u;
+            MixFnv(ref hash, LevelId);
+            MixFnv(ref hash, MovesLeft);
+            MixFnv(ref hash, TargetScore);
+            MixFnv(ref hash, Width);
+            MixFnv(ref hash, Height);
+            for (int y = 0; y < Height; y++)
+            {
+                for (int x = 0; x < Width; x++)
+                {
+                    var cell = Cells[x, y];
+                    if (cell == null) { MixFnv(ref hash, 0xFF); continue; }
+                    MixFnv(ref hash, cell.Color);
+                    MixFnv(ref hash, (int)cell.Special);
+                    MixFnv(ref hash, cell.CrateHp);
+                    MixFnv(ref hash, cell.IceHp);
+                    MixFnv(ref hash, cell.Prop);
+                    MixFnv(ref hash, cell.Shell ? 1 : 0);
+                    MixFnv(ref hash, cell.Bottle ? 1 : 0);
+                    MixFnv(ref hash, cell.SandHp);
+                }
+            }
+            return hash.ToString("x8", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        private static void MixFnv(ref uint hash, int value)
+        {
+            unchecked
+            {
+                uint v = (uint)value;
+                hash = (hash ^ (v & 0xFFu)) * 16777619u;
+                hash = (hash ^ ((v >> 8) & 0xFFu)) * 16777619u;
+                hash = (hash ^ ((v >> 16) & 0xFFu)) * 16777619u;
+                hash = (hash ^ ((v >> 24) & 0xFFu)) * 16777619u;
+            }
+        }
+
         /// <summary>
         /// Puts the chosen boosters on the freshly generated board, in BoosterType order. Called
         /// once, from NewLevel, before the legality sweep. An empty loadout returns without drawing
@@ -361,9 +468,14 @@ namespace BloomHarbor
         public const int SandScore = IceScore, BottleScore = CrateScore;
 
         // ---- The Big Wave (design/specs/big-wave-r17.md) ----
-        /// <summary>Meter capacity. The reference casual player gains 7.97 per tap on average, so a
-        /// wave breaks about every seven moves (measured: mean 7.45, median 7, 10th-90th pct 4-10).</summary>
-        public const int WaveCapacity = 45;
+        /// <summary>Meter capacity. 45 until 2026-11-25, when the owner asked for the wave to be "more of
+        /// focus (that's coolest thing)": at 36 the reference casual player breaks a wave every 5.95 taps
+        /// (median 5, 10th-90th pct 3-8; 7.36 at 45), five or six waves a level
+        /// (design/specs/big-wave-r17.md section 2). A board saved under the 45 meter with more charge
+        /// than this restarts as an updated level (CampaignAttempts.RestoreBoard).</summary>
+        public const int WaveCapacity = 36;
+        /// <summary>The capacity boards were saved under before 2026-11-25 (rules `shorepop-big-wave-v4`).</summary>
+        public const int PriorWaveCapacity = 45;
         /// <summary>Charge on top of the cleared tiles for each special a tap fires, and for a combination.</summary>
         public const int WaveSpecialCharge = 4, WaveComboCharge = 8;
         /// <summary>Rows the wave sweeps, from the shore up.</summary>
@@ -634,6 +746,8 @@ namespace BloomHarbor
                 if (cell.IsCrate) { if (!soft) damagedCrates.Add(position); continue; }
                 if (soft)
                 {
+                    // Variety r1: a swept tile still counts toward a colour order, like any cleared tile.
+                    AddGoal(GoalType.Color, cell.Color, 1);
                     if (cell.IceHp > 0) { AddGoal(GoalType.Ice, 0, 1); result.IceCleared++; }
                     Cells[position.X, position.Y] = null;
                     result.ClearedPositions.Add(position); result.ClearedCount++;
@@ -782,7 +896,7 @@ namespace BloomHarbor
             // caller's existing "Resume rejected" path instead of resuming it under the new win rule.
             if (snapshot == null || snapshot.Version < 1 || snapshot.Version > MaximumSnapshotVersion || snapshot.Width < 2 || snapshot.Width > 16 ||
                 snapshot.Height < 2 || snapshot.Height > 16 || snapshot.ColorCount < 2 || snapshot.ColorCount > 5 ||
-                snapshot.MovesLeft < 0 || snapshot.MovesLeft > 1000 + BoosterCatalog.MaximumBoosterMoves ||
+                snapshot.MovesLeft < 0 || snapshot.MovesLeft > 1000 + BoosterCatalog.MaximumBoosterMoves + MaximumMercyMoves ||
                 snapshot.BreezeCharge < 0 || snapshot.BreezeCharge > 20 ||
                 !BoosterLoadout.IsValidMask(snapshot.BoostersApplied) ||
                 snapshot.Score < 0 || snapshot.TargetScore < 1 || snapshot.TargetScore > LevelDefinition.MaximumTargetScore ||
@@ -1106,14 +1220,117 @@ namespace BloomHarbor
         }
 
         /// <summary>
+        /// Solver/reachability gate for all continue doors (WO-20261107-555): returns true only when a
+        /// lost board has at least one legal continuation with <paramref name="extraMoves"/> moves and
+        /// every remaining goal and score target is mathematically reachable within those moves.
+        /// </summary>
+        public bool CanContinueWin(int extraMoves)
+        {
+            if (extraMoves <= 0 || Status != GameStatus.Lost || Cells == null) return false;
+            long area = (long)Width * Height;
+            int abilityCount = abilityUses == null ? 0 : abilityUses.Count;
+            long maximumNewCells = MaximumCellsPerMove(area, WaveEnabled) * extraMoves + area * (MaximumAbilityUses - abilityCount);
+            long maximumScore = MaximumMoveScore(area, WaveEnabled) * extraMoves + (long)MoveBonus * extraMoves;
+            if ((long)nextId + maximumNewCells > int.MaxValue ||
+                (long)Score + maximumScore > int.MaxValue ||
+                (long)rocketOrdinal + extraMoves > int.MaxValue ||
+                (long)WavesBroken + extraMoves > int.MaxValue)
+                return false;
+            if (Score < TargetScore && (long)Score + maximumScore < TargetScore) return false;
+            int matchable = 0, crates = 0, props = 0, ice = 0, sand = 0, bottles = 0;
+            for (int y = 0; y < Height; y++)
+                for (int x = 0; x < Width; x++)
+                {
+                    var cell = Cells[x, y];
+                    if (cell == null) continue;
+                    if (cell.IsMatchable) matchable++;
+                    if (cell.CrateHp > 0) crates++;
+                    if (cell.IsProp) props++;
+                    if (cell.IceHp > 0) ice++;
+                    if (cell.SandHp > 0) sand++;
+                    if (cell.Bottle)
+                    {
+                        bottles++;
+                        int maxBlockerHpBelow = 0;
+                        bool anyOpenBelow = false;
+                        for (int cy = 0; cy < y; cy++)
+                        {
+                            var below = Cells[x, cy];
+                            if (below != null && below.IsCrate) maxBlockerHpBelow = Math.Max(maxBlockerHpBelow, below.CrateHp);
+                            else anyOpenBelow = true;
+                        }
+                        if (!anyOpenBelow && maxBlockerHpBelow >= 2 && extraMoves < 2 && !WaveEnabled) return false;
+                    }
+                }
+            if (matchable == 0) return false;
+            if (Goals != null)
+                foreach (var goal in Goals)
+                {
+                    if (goal == null || goal.Complete) continue;
+                    int rem = goal.Remaining;
+                    if (goal.Type == GoalType.Prop && rem > props) return false;
+                    if (goal.Type == GoalType.Crate && rem > crates) return false;
+                    if (goal.Type == GoalType.Ice && rem > ice) return false;
+                    if (goal.Type == GoalType.Sand && rem > sand) return false;
+                    if (goal.Type == GoalType.Drop)
+                    {
+                        int unspawned = Math.Max(0, goal.Target - goal.Spawned);
+                        if (rem > bottles + unspawned) return false;
+                        // LaunchBottle spawns at most one bottle per move after CollectBottles, so any
+                        // unspawned bottle needs at least one move to spawn and one later move to land.
+                        if (unspawned > 0 && extraMoves <= unspawned) return false;
+                    }
+                }
+            return true;
+        }
+
+        /// <summary>True when a saved lost snapshot is valid and winnable with <paramref name="extraMoves"/>.</summary>
+        public static bool CanWinAfterContinue(BoardSnapshot snapshot, int extraMoves)
+        {
+            if (snapshot == null || extraMoves <= 0 || snapshot.Status != GameStatus.Lost) return false;
+            try
+            {
+                var board = FromSnapshot(snapshot);
+                return board.CanContinueWin(extraMoves);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>The most moves fast mercy can add to a fresh board (FastMercy, design/specs/difficulty-tiers.md section 6).</summary>
+        public const int MaximumMercyMoves = 8;
+
+        /// <summary>
+        /// Fast mercy (owner 2026-11-25, "ftue protection?"): a fresh attempt after repeated losses on the
+        /// same level starts with a few more moves, said on the level card and at the board's start. Only
+        /// an untouched board takes it (nothing played, nothing to undo), so it is part of the attempt's
+        /// starting state like a booster's extra moves and can never be granted mid-play. Score, target,
+        /// cells and the per-move leftover bonus are untouched. Returns false and changes nothing otherwise.
+        /// </summary>
+        public bool GrantStartMoves(int moves)
+        {
+            if (moves <= 0 || moves > MaximumMercyMoves || Status != GameStatus.Playing || history.Count > 0 ||
+                abilityUses.Count > 0 || Score != 0 || WavesBroken != 0 || (long)MovesLeft + moves > 1000 + BoosterCatalog.MaximumBoosterMoves + MaximumMercyMoves)
+                return false;
+            long area = (long)Width * Height;
+            if ((long)nextId + MaximumCellsPerMove(area, WaveEnabled) * (MovesLeft + moves) + area * MaximumAbilityUses > int.MaxValue ||
+                MaximumMoveScore(area, WaveEnabled) * (MovesLeft + moves) + (long)MoveBonus * (MovesLeft + moves) > int.MaxValue)
+                return false;
+            MovesLeft += moves;
+            return true;
+        }
+
+        /// <summary>
         /// Second wind (monetization M2): a lost board continues with extra moves. Only a Lost
-        /// board accepts it; score, target and cells are untouched, and the board is Playing again
-        /// with the moves added, which the snapshot rules already allow. A board left without a
-        /// legal move by its last clear is reshuffled exactly as an ordinary move would.
+        /// board that passes <see cref="CanContinueWin"/> accepts it; score, target and cells are
+        /// untouched, and the board is Playing again with the moves added, which the snapshot rules
+        /// already allow. A board left without a legal move by its last clear is reshuffled.
         /// </summary>
         public bool GrantExtraMoves(int moves)
         {
-            if (moves <= 0 || Status != GameStatus.Lost) return false;
+            if (!CanContinueWin(moves)) return false;
             MovesLeft += moves; Status = GameStatus.Playing;
             EnsureLegalMoves();
             return true;

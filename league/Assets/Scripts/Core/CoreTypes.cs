@@ -20,9 +20,9 @@ namespace BloomHarbor
     /// that limits them lives in the player's save, never on the board.
     /// </summary>
     public enum AbilityType { TideSweep, SeedToss, Lantern }
-    /// <summary>What a campaign level asks for besides its score target (board-mechanics-r16).
-    /// Catalog data only; nothing is saved by this number.</summary>
-    public enum LevelObjective { Score, Prop, Drop, Sand }
+    /// <summary>What a campaign level asks for besides its score target (board-mechanics-r16; variety r1
+    /// appended a colour order, crates and ice). Catalog data only; nothing is saved by this number.</summary>
+    public enum LevelObjective { Score, Prop, Drop, Sand, Collect, Crate, Ice }
 
     /// <summary>One ability applied to a board, recorded in the snapshot for replay and validation.</summary>
     [Serializable]
@@ -241,6 +241,23 @@ namespace BloomHarbor
         /// empty, so a definition written before the field existed still builds.
         /// </summary>
         public List<SpecialPlacement> Specials = new List<SpecialPlacement>();
+
+        /// <summary>
+        /// Variety r1 (owner 2026-11-25: "not always the same items"): which of the world's five subjects
+        /// each abstract colour wears on this level, as a permutation of 0..4 whose first
+        /// <see cref="ColorCount"/> entries are the subjects the board deals. Presentation only: the
+        /// model, the seeds, routes and calibrated targets never read it, so a level plays exactly the
+        /// same board whatever its pieces look like. Null is the world's token order (daily recipes,
+        /// test boards, a definition written before the field existed).
+        /// </summary>
+        public int[] ColorSubjects;
+
+        /// <summary>The subject slot (0..4) colour <paramref name="colour"/> wears on this level.</summary>
+        public int SubjectOf(int colour)
+        {
+            if (ColorSubjects != null && colour >= 0 && colour < ColorSubjects.Length) return ColorSubjects[colour];
+            return colour;
+        }
 
         /// <summary>True when the opening board carries an authored special.</summary>
         public bool HasAuthoredSpecials { get { return Specials != null && Specials.Count > 0; } }
